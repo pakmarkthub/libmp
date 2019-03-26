@@ -456,7 +456,7 @@ int mp_progress_single_flow(mp_flow_t flow)
 
     for (i=0; i<client_count; i++) {
         client_t *client = &clients[i];
-        cq = (flow == TX_FLOW) ? client->send_cq : client->recv_cq; 
+        cq = (flow == TX_FLOW) ? &client->qp->send_cq : &client->qp->recv_cq; 
 
         // WARNING: can't progress a CQE if it is associated to an RX req
         // which is dependent upon GPU work which has not been triggered yet
@@ -466,7 +466,8 @@ int mp_progress_single_flow(mp_flow_t flow)
             mp_dbg_msg("cannot poll client[%d] flow=%s\n", client->mpi_rank, flow_str);
             continue;
         }
-        ne = ibv_poll_cq(cq->cq, cqe_count, wc);
+        //ne = ibv_poll_cq(cq->cq, cqe_count, wc);
+        ne = gds_poll_cq(cq, cqe_count, wc);
         //mp_dbg_msg("client[%d] flow=%s cqe_count=%d nw=%d\n", client->mpi_rank, flow_str, cqe_count, ne);
         if (ne == 0) {
             //if (errno) mp_dbg_msg("client[%d] flow=%s errno=%s\n", client->mpi_rank, flow_str, strerror(errno));
@@ -517,7 +518,7 @@ int mp_progress_single_flow(mp_flow_t flow)
                     ACCESS_ONCE(client->last_done_id) = req->id;
                     progress_request(req);
                 } else {
-                    mp_dbg_msg("received completion with null wr_id \n");
+                    mp_dbg_msg("received completion with null wr_id, flow: %s\n", flow_str);
                 }
             }
         }
@@ -1609,8 +1610,8 @@ int mp_isend (void *buf, int size, int peer, mp_reg_t *reg_t, mp_request_t *req_
     else
     {
         req->in.sr.next = NULL;
-        req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+        //req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
+        //req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
         req->in.sr.wr_id = (uintptr_t) req;
         req->in.sr.num_sge = 1;
         req->in.sr.sg_list = &req->sg_entry;
@@ -1680,8 +1681,8 @@ int mp_isendv (struct iovec *v, int nvecs, int peer, mp_reg_t *reg_t, mp_request
   }
 
   req->in.sr.next = NULL;
-  req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-  req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+  //req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
+  //req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
   req->in.sr.wr_id = (uintptr_t) req;
   req->in.sr.num_sge = nvecs;
   req->in.sr.sg_list = req->sgv;
@@ -1867,7 +1868,7 @@ int mp_window_destroy(mp_window_t *window_t)
 int mp_iput (void *src, int size, mp_reg_t *reg_t, int peer, size_t displ, 
              mp_window_t *window_t, mp_request_t *req_t, int flags) 
 {
-  int ret = 0;
+  /*int ret = 0;
   struct mp_request *req;
   struct mp_reg *reg = *reg_t;
   struct mp_window *window = *window_t;
@@ -1923,13 +1924,14 @@ int mp_iput (void *src, int size, mp_reg_t *reg_t, int peer, size_t displ,
   *req_t = req;
 
  out:
-  return ret;
+  return ret;*/
+  return -1;
 }
 
 int mp_iget (void *dst, int size, mp_reg_t *reg_t, int peer, size_t displ, 
 	mp_window_t *window_t, mp_request_t *req_t) 
 {
-  int ret = 0;
+  /*int ret = 0;
   struct mp_request *req;
   struct mp_reg *reg = *reg_t;
   struct mp_window *window = *window_t;
@@ -1976,7 +1978,8 @@ int mp_iget (void *dst, int size, mp_reg_t *reg_t, int peer, size_t displ,
   *req_t = req;
 
  out:
-  return ret;
+  return ret;*/
+    return -1;
 }
 
 int mp_wait32(uint32_t *ptr, uint32_t value, int flags)

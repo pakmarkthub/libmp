@@ -179,7 +179,14 @@ int main (int c, char *v[])
     iter_count = ITER_COUNT_SMALL;
     window_size = WINDOW_SIZE; 
 
-    for (size=1; size<=MAX_SIZE; size*=2) 
+    /*{
+        int wait = 1;
+        while (wait)
+            sleep(5);
+    }*/
+
+    //for (size=1; size<=MAX_SIZE; size*=2) 
+    for (size=64; size<=MAX_SIZE; size*=2) 
     {
         if (size > 1024) {
             iter_count = ITER_COUNT_LARGE;

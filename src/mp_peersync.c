@@ -242,8 +242,8 @@ int mp_send_on_stream (void *buf, int size, int peer, mp_reg_t *reg_t,
         assert(req);
 
         req->in.sr.next = NULL;
-        req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+        /*req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
+        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;*/
         req->in.sr.wr_id = (uintptr_t) req;
         req->in.sr.num_sge = 1;
         req->in.sr.sg_list = &req->sg_entry;
@@ -323,8 +323,8 @@ int mp_send_on_stream (void *buf, int size, int peer, mp_reg_t *reg_t,
 
         assert(req);
         req->in.sr.next = NULL;
-        req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+        /*req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
+        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;*/
         req->in.sr.wr_id = (uintptr_t) req;
         req->in.sr.num_sge = 1;
         req->in.sr.sg_list = &(req->sg_entry);
@@ -374,8 +374,8 @@ int mp_isend_on_stream (void *buf, int size, int peer, mp_reg_t *reg_t,
         assert(req);
 
         req->in.sr.next = NULL;
-        req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+        /*req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
+        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;*/
         req->in.sr.wr_id = (uintptr_t) req;
         req->in.sr.num_sge = 1;
         req->in.sr.sg_list = &req->sg_entry;
@@ -427,8 +427,8 @@ int mp_isend_on_stream (void *buf, int size, int peer, mp_reg_t *reg_t,
         mp_dbg_msg("req=%p id=%d\n", req, req->id);
 
         req->in.sr.next = NULL;
-        req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+        /*req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
+        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;*/
         req->in.sr.wr_id = (uintptr_t) req;
         req->in.sr.num_sge = 1;
         req->in.sr.sg_list = &(req->sg_entry);
@@ -553,8 +553,8 @@ int mp_isendv_on_stream (struct iovec *v, int nvecs, int peer, mp_reg_t *reg_t,
   }
 
   req->in.sr.next = NULL;
-  req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-  req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+  /*req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
+  req->in.sr.exp_opcode = IBV_EXP_WR_SEND;*/
   req->in.sr.wr_id = (uintptr_t) req;
   req->in.sr.num_sge = nvecs;
   req->in.sr.sg_list = req->sgv;
@@ -594,8 +594,8 @@ int mp_send_prepare(void *buf, int size, int peer, mp_reg_t *reg_t, mp_request_t
 
     if (use_event_sync) {
         req->in.sr.next = NULL;
-        req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+        /*req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
+        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;*/
         req->in.sr.wr_id = (uintptr_t) req;
         req->in.sr.num_sge = 1;
         req->in.sr.sg_list = &req->sg_entry;
@@ -611,8 +611,8 @@ int mp_send_prepare(void *buf, int size, int peer, mp_reg_t *reg_t, mp_request_t
         req->sg_entry.addr = (uintptr_t)(buf);
     } else {
         req->in.sr.next = NULL;
-        req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+        /*req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
+        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;*/
         req->in.sr.wr_id = (uintptr_t) req;
         req->in.sr.num_sge = 1;
         req->in.sr.sg_list = &(req->sg_entry);
@@ -689,8 +689,8 @@ int mp_sendv_prepare(struct iovec *v, int nvecs, int peer, mp_reg_t *reg_t, mp_r
   }
 
   req->in.sr.next = NULL;
-  req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-  req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+  /*req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
+  req->in.sr.exp_opcode = IBV_EXP_WR_SEND;*/
   req->in.sr.wr_id = (uintptr_t) req;
   req->in.sr.num_sge = nvecs;
   req->in.sr.sg_list = req->sgv;
@@ -1276,7 +1276,7 @@ out:
 int mp_put_prepare (void *src, int size, mp_reg_t *reg_t, int peer, size_t displ,
                     mp_window_t *window_t, mp_request_t *req_t, int flags)
 {
-  int ret = 0;
+  /*int ret = 0;
   struct mp_request *req = NULL;
   struct mp_reg *reg = *reg_t;
   struct mp_window *window = *window_t;
@@ -1348,7 +1348,8 @@ int mp_put_prepare (void *src, int size, mp_reg_t *reg_t, int peer, size_t displ
           release_mp_request(req);
   }
       
-  return ret;
+  return ret;*/
+  return -1;
 }
 
 /*----------------------------------------------------------------------------*/
@@ -1356,7 +1357,7 @@ int mp_put_prepare (void *src, int size, mp_reg_t *reg_t, int peer, size_t displ
 int mp_iput_on_stream (void *src, int size, mp_reg_t *reg_t, int peer, size_t displ,
                        mp_window_t *window_t, mp_request_t *req_t, int flags, cudaStream_t stream)
 {
-  int ret = 0;
+  /*int ret = 0;
   struct mp_request *req = NULL;
   struct mp_reg *reg = *reg_t;
   struct mp_window *window = *window_t;
@@ -1427,7 +1428,8 @@ int mp_iput_on_stream (void *src, int size, mp_reg_t *reg_t, int peer, size_t di
           release_mp_request(req);
   }
 
-  return ret;
+  return ret;*/
+  return -1;
 }
 
 /*----------------------------------------------------------------------------*/
@@ -1435,7 +1437,7 @@ int mp_iput_on_stream (void *src, int size, mp_reg_t *reg_t, int peer, size_t di
 int mp_iget_on_stream (void *dst, int size, mp_reg_t *reg_t, int peer, size_t displ,
         mp_window_t *window_t, mp_request_t *req_t, cudaStream_t stream)
 {
-  int ret = 0;
+  /*int ret = 0;
   struct mp_request *req;
   struct mp_reg *reg = *reg_t;
   struct mp_window *window = *window_t;
@@ -1484,7 +1486,8 @@ int mp_iget_on_stream (void *dst, int size, mp_reg_t *reg_t, int peer, size_t di
   *req_t = req;
 
  out:
-  return ret;
+  return ret;*/
+  return -1;
 }
 
 /*----------------------------------------------------------------------------*/
