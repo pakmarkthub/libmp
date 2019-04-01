@@ -91,7 +91,8 @@ int smp_depth = 256;
 int ib_tx_depth = 256*2;
 int ib_rx_depth = 256*2;
 int num_cqes = 256; // it gets actually rounded up to 512
-int ib_max_sge = 30;
+//int ib_max_sge = 30;
+int ib_max_sge = 16;
 int ib_inline_size = 64;
 struct ibv_port_attr ib_port_attr;
 
