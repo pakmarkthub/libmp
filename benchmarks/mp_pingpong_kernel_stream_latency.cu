@@ -38,6 +38,8 @@
 #include <mpi.h>
 #include <gdsync.h>
 #include <mp.h>
+#include "mp/device.cuh"
+#include <vector>
 
 #include "prof.h"
 
@@ -105,10 +107,10 @@ int use_calc_size = 1;
 volatile uint32_t tracking_event = 0;
 float *in = NULL;
 float *out = NULL;
-const float value = 0.1F; 
+int num_streams = 1;
 
-int *sindex = NULL;
-int *windex = NULL;
+unsigned int *sindex_d = NULL;
+unsigned int *windex_d = NULL;
 __device__ int request_count;
 
 __device__ int counter;
@@ -170,8 +172,9 @@ mp_request_t *sreq = NULL;
 mp_request_t *rreq = NULL;
 mp::mlx5::send_desc_t *sdesc = NULL;
 mp::mlx5::wait_desc_t *wdesc = NULL;
-cudaGraphExec_t graphExec = NULL;
+cudaGraphExec_t graphExec;
 cudaGraph_t graph, subGraph;
+int graph_created = 0;
 cudaGraphNode_t emptyNode; 
 
 mp_reg_t sreg, rreg; 
@@ -215,20 +218,20 @@ void wait_recv (int batch_index)
     }
 }
 
-__global__ void send_op_kernel (mp::mlx5::send_desc_t *desc, int *index)
+__global__ void send_op_kernel (mp::mlx5::send_desc_t *desc, unsigned int *index)
 {
     mp::device::mlx5::send(desc[*index]);
-    *index = (*index + 1)%request_count;
+    atomicInc(index, UINT_MAX);
 }
 
-__global__ void wait_op_kernel (mp::mlx5::wait_desc_t *desc, int *index)
+__global__ void wait_op_kernel (mp::mlx5::wait_desc_t *desc, unsigned int *index)
 {
     mp::device::mlx5::wait(desc[*index]);
     mp::device::mlx5::signal(desc[*index]);
-    *index = (*index + 1)%request_count;
+    atomicInc(index, UINT_MAX);
 }
 
-void create_work_async_graph (double kernel_size) 
+void create_work_async_graph (size_t size, double kernel_size) 
 {
     std::vector<cudaGraphNode_t> nodeDependencies;
     cudaKernelNodeParams waitParams, sendParams, calcKernelParams, dummyKernelParams;
@@ -237,12 +240,12 @@ void create_work_async_graph (double kernel_size)
     int count = batches_inflight*steps_per_batch;
     CUDA_CHECK(cudaMalloc((void **)&in, size));
     CUDA_CHECK(cudaMalloc((void **)&out, size));
-    CUDA_CHECK(cudaMalloc((void **)&sindex_d, sizeof(int)));
-    CUDA_CHECK(cudaMalloc((void **)&windex_d, sizeof(int)));
+    CUDA_CHECK(cudaMalloc((void **)&sindex_d, sizeof(unsigned int)));
+    CUDA_CHECK(cudaMalloc((void **)&windex_d, sizeof(unsigned int)));
     CUDA_CHECK(cudaMemset((void *)in, 1, size));
     CUDA_CHECK(cudaMemset((void *)out, 1, size));
-    CUDA_CHECK(cudaMemset((void *)sindex_d, 0, sizeof(int)));
-    CUDA_CHECK(cudaMemset((void *)windex_d, 0, sizeof(int)));
+    CUDA_CHECK(cudaMemset((void *)sindex_d, 0, sizeof(unsigned int)));
+    CUDA_CHECK(cudaMemset((void *)windex_d, 0, sizeof(unsigned int)));
     CUDA_CHECK(cudaMemcpyToSymbol(request_count, (void *)&count, sizeof(int), 0, cudaMemcpyHostToDevice));
 
     CUDA_CHECK(cudaGraphCreate(&subGraph, 0));
@@ -264,15 +267,14 @@ void create_work_async_graph (double kernel_size)
     sendParams.kernelParams = sendArgs;
     sendParams.extra = NULL;
 
-    const int nblocks = over_sub_factor * gpu_num_sm;
-    const int nthreads = 32*2;
+    const float value = 0.1F; 
     int n = kernel_size / sizeof(float);
 
     calcKernelParams.func = (void*)calc_kernel;
     calcKernelParams.gridDim = over_sub_factor * gpu_num_sm;
     calcKernelParams.blockDim = 32*2;
     calcKernelParams.sharedMemBytes = 0;
-    void *calcKernelArgs[4] = {(void*)&n, (void *)&value, (void *)&int, (void *)&out};
+    void *calcKernelArgs[4] = {(void*)&n, (void *)&value, (void *)&in, (void *)&out};
     calcKernelParams.kernelParams = calcKernelArgs;
     calcKernelParams.extra = NULL;
 
@@ -340,28 +342,21 @@ void create_work_async_graph (double kernel_size)
     CUDA_CHECK(cudaGraphInstantiate(&graphExec, graph, NULL, NULL, 0));
 }
 
-void post_work_async_graphs (int size, int batch_index)
-{
-    prepare_work_async_graphs (size, batch_index);
-    CUDA_CHECK(cudaGraphLaunch(graphExec, main_stream));
-}
-
 void prepare_work_async_graphs (int size, int batch_index)
 {
-    int j;
     int sreq_idx = batch_to_sreq_idx (batch_index);
     int rreq_idx = batch_to_rreq_idx (batch_index);
 
-    for (j=0; j<steps_per_batch; j++) {
+    for (int j=0; j<steps_per_batch; j++) {
 	if (!my_rank) {
-	    for(k=0; k<num_streams; k++) { 
+	    for(int k=0; k<num_streams; k++) { 
                 MP_CHECK(mp::mlx5::get_descriptors(&wdesc[rreq_idx + j*num_streams + k], &rreq[sreq_idx + j*num_streams + k]));
 
                 MP_CHECK(mp_send_prepare((void *)((uintptr_t)sbuf_d), size, peer, &sreg, &sreq[sreq_idx + j*num_streams + k]));
                 MP_CHECK(mp::mlx5::get_descriptors(&sdesc[sreq_idx + j], &sreq[sreq_idx + j*num_streams + k]));
  	    }	
    	} else {
-	    for(k=0; k<num_streams; k++) { 
+	    for(int k=0; k<num_streams; k++) { 
                MP_CHECK(mp_send_prepare((void *)((uintptr_t)sbuf_d), size, peer, &sreg, &sreq[sreq_idx + j*num_streams + k]));
                MP_CHECK(mp::mlx5::get_descriptors(&sdesc[sreq_idx + j], &sreq[sreq_idx + j*num_streams + k]));
 
@@ -371,21 +366,26 @@ void prepare_work_async_graphs (int size, int batch_index)
     }
 }
 
+void post_work_async_graphs (int size, int batch_index)
+{
+    prepare_work_async_graphs (size, batch_index);
+    CUDA_CHECK(cudaGraphLaunch(graphExec, main_stream));
+}
+
 void post_work_async_kernels (int size, int batch_index, double kernel_size) 
 {
-    int j;
     int sreq_idx = batch_to_sreq_idx (batch_index);
     int rreq_idx = batch_to_rreq_idx (batch_index);
 
-    for (j=0; j<steps_per_batch; j++) {
+    for (int j=0; j<steps_per_batch; j++) {
 	CUDA_CHECK(cudaEventRecord(start_event, main_stream));	
-	for(k=0; k<num_streams; k++) {
-	    CUDA_CHECK(cudaStreamWaitEvent(start_event, main_stream));	
+	for(int k=0; k<num_streams; k++) {
+	    CUDA_CHECK(cudaStreamWaitEvent(streams[k], start_event, 0));	
 	}
 	if (!my_rank) {
-	    for(k=0; k<num_streams; k++) { 
+	    for(int k=0; k<num_streams; k++) { 
                 MP_CHECK(mp::mlx5::get_descriptors(&wdesc[rreq_idx + j*num_streams + k], &rreq[sreq_idx + j*num_streams + k]));
-	        wait_op_kernel<<<1,1,0,stream>>>(wdesc[rreq_idx + j*num_streams + k]);
+	        wait_op_kernel<<<1,1,0,streams[k]>>>(&wdesc[rreq_idx + j*num_streams + k], windex_d);
                 CUDA_CHECK(cudaGetLastError());
 
                 if (kernel_size > 0) {
@@ -397,18 +397,18 @@ void post_work_async_kernels (int size, int batch_index, double kernel_size)
 
                 MP_CHECK(mp_send_prepare((void *)((uintptr_t)sbuf_d), size, peer, &sreg, &sreq[sreq_idx + j*num_streams + k]));
                 MP_CHECK(mp::mlx5::get_descriptors(&sdesc[sreq_idx + j], &sreq[sreq_idx + j*num_streams + k]));
-	        send_op_kernel<<<1,1,0,stream>>>(sdesc[sreq_idx + j*num_streams + k]);
+	        send_op_kernel<<<1,1,0,streams[k]>>>(&sdesc[sreq_idx + j*num_streams + k], sindex_d);
                 CUDA_CHECK(cudaGetLastError());
  	    }	
    	} else {
-	    for(k=0; k<num_streams; k++) { 
+	    for(int k=0; k<num_streams; k++) { 
                MP_CHECK(mp_send_prepare((void *)((uintptr_t)sbuf_d), size, peer, &sreg, &sreq[sreq_idx + j*num_streams + k]));
                MP_CHECK(mp::mlx5::get_descriptors(&sdesc[sreq_idx + j], &sreq[sreq_idx + j*num_streams + k]));
-	       send_op_kernel<<<1,1,0,stream>>>(sdesc[sreq_idx + j*num_streams + k]);
+	       send_op_kernel<<<1,1,0,streams[k]>>>(&sdesc[sreq_idx + j*num_streams + k], sindex_d);
                CUDA_CHECK(cudaGetLastError());
 
 	       MP_CHECK(mp::mlx5::get_descriptors(&wdesc[rreq_idx + j*num_streams + k], &rreq[sreq_idx + j*num_streams + k]));
-	       wait_op_kernel<<<1,1,0,stream>>>(wdesc[rreq_idx + j*num_streams + k]);
+	       wait_op_kernel<<<1,1,0,streams[k]>>>(&wdesc[rreq_idx + j*num_streams + k], windex_d);
                CUDA_CHECK(cudaGetLastError());
 
                if (kernel_size > 0) {
@@ -419,26 +419,25 @@ void post_work_async_kernels (int size, int batch_index, double kernel_size)
                }
  	    }	
 	}
-	for(k=0; k<num_streams; k++) {
+	for(int k=0; k<num_streams; k++) {
 	    CUDA_CHECK(cudaEventRecord(stop_event, streams[k]));
-	    CUDA_CHECK(cudaStreamWaitEvent(stop_event, main_stream));
+	    CUDA_CHECK(cudaStreamWaitEvent(main_stream, stop_event, 0));
 	}
     }
 }
 
 void post_work_async (int size, int batch_index, double kernel_size) 
 {
-    int j;
     int sreq_idx = batch_to_sreq_idx (batch_index);
     int rreq_idx = batch_to_rreq_idx (batch_index);
    
-    for (j=0; j<steps_per_batch; j++) {
+    for (int j=0; j<steps_per_batch; j++) {
 	CUDA_CHECK(cudaEventRecord(start_event, main_stream));	
-	for(k=0; k<num_streams; k++) {
-	    CUDA_CHECK(cudaStreamWaitEvent(start_event, main_stream));	
+	for(int k=0; k<num_streams; k++) {
+	    CUDA_CHECK(cudaStreamWaitEvent(streams[k], start_event, 0));	
 	}
 	if (!my_rank) { 
-	    for(k=0; k<num_streams; k++) { 
+	    for(int k=0; k<num_streams; k++) { 
                 MP_CHECK(mp_wait_on_stream(&rreq[rreq_idx + j*num_streams + k], streams[k]));
 
                 if (kernel_size > 0) {
@@ -452,7 +451,7 @@ void post_work_async (int size, int batch_index, double kernel_size)
 					&sreq[sreq_idx + j*num_streams + k], streams[k]));
 	    }
  	} else {
-	    for(k=0; k<num_streams; k++) { 
+	    for(int k=0; k<num_streams; k++) { 
                 MP_CHECK(mp_isend_on_stream ((void *)((uintptr_t)sbuf_d), size, peer, &sreg, 
 					&sreq[sreq_idx + j*num_streams + k], streams[k]));
 
@@ -466,22 +465,21 @@ void post_work_async (int size, int batch_index, double kernel_size)
                 }
 	    }
 	}
-	for(k=0; k<num_streams; k++) {
+	for(int k=0; k<num_streams; k++) {
 	    CUDA_CHECK(cudaEventRecord(stop_event, streams[k]));
-	    CUDA_CHECK(cudaStreamWaitEvent(stop_event, main_stream));
+	    CUDA_CHECK(cudaStreamWaitEvent(main_stream, stop_event, 0));
 	}
     }
 }
 
 void post_work_sync (int size, int batch_index, double kernel_size) 
 {
-    int j;
     int rreq_idx = batch_to_rreq_idx (batch_index);
     int sreq_idx = batch_to_sreq_idx (batch_index);
 
-    for (j=0; j<steps_per_batch; j++) {
+    for (int j=0; j<steps_per_batch; j++) {
 	if (!my_rank) {
-	    for(k=0; k<num_streams; k++) { 
+	    for(int k=0; k<num_streams; k++) { 
                 MP_CHECK(mp_wait(&rreq[rreq_idx + j*num_streams + k]));
 
                 if (kernel_size > 0) {
@@ -492,17 +490,17 @@ void post_work_sync (int size, int batch_index, double kernel_size)
                 }
 	    }
 
-	    for(k=0; k<num_streams; k++) { 
-                CUDA_CHECK(cudaStreamSynchronize(stream));
+	    for(int k=0; k<num_streams; k++) { 
+                CUDA_CHECK(cudaStreamSynchronize(streams[k]));
 
                 MP_CHECK(mp_isend ((void *)((uintptr_t)sbuf_d), size, peer, &sreg, &sreq[sreq_idx + j]));
 	    }
        } else {
-	    for(k=0; k<num_streams; k++) { 
+	    for(int k=0; k<num_streams; k++) { 
                 MP_CHECK(mp_isend ((void *)((uintptr_t)sbuf_d), size, peer, &sreg, &sreq[sreq_idx + j]));
 	    }
 
-	    for(k=0; k<num_streams; k++) { 
+	    for(int k=0; k<num_streams; k++) { 
                 MP_CHECK(mp_wait(&rreq[rreq_idx + j*num_streams + k]));
 
                 if (kernel_size > 0) {
@@ -513,7 +511,7 @@ void post_work_sync (int size, int batch_index, double kernel_size)
                 }
 	    }
 
-	    for(k=0; k<num_streams; k++) { 
+	    for(int k=0; k<num_streams; k++) { 
                 CUDA_CHECK(cudaStreamSynchronize(streams[k]));
 	    }
         }
@@ -536,9 +534,13 @@ double sr_exchange (MPI_Comm comm, int size, int iter_count, double kernel_size,
     batch_count = iter_count/steps_per_batch;
     tracking_event = 0;
 
-    if (use_graphs) {
-        assert (use_kernel_ops == 1);
+    if (use_graphs && !graph_created) {
+        if (!use_kernel_ops) { 
+	    fprintf(stderr, "CUDA graphs cannot be used without kernel ops \n"); 
+	    return 0; 
+	}
         create_work_async_graph (size, kernel_size);
+	graph_created = 1;
     }
 
     post_recv (size, 0);
@@ -553,7 +555,7 @@ double sr_exchange (MPI_Comm comm, int size, int iter_count, double kernel_size,
 	}
 
         if (use_async) { 
-            if (use_kernels) {
+            if (use_kernel_ops) {
 	        if (use_graphs) { 
 		    post_work_async_graphs (size, j);
 		} else { 
@@ -630,7 +632,6 @@ int main (int argc, char *argv[])
     int kernel_size = 20;
     int comm_comp_ratio = 0;
     int validate = 0;
-    int num_streams = 1;
 
     size = 1;
     max_size = MAX_SIZE;
@@ -716,7 +717,7 @@ int main (int argc, char *argv[])
         }
     }
 
-    char *tags = "wait_recv|wait_send|post_recv|post_work";
+    char tags[] = "wait_recv|wait_send|post_recv|post_work";
 
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &comm_size);
@@ -778,10 +779,10 @@ int main (int argc, char *argv[])
     /*allocating requests*/
     sreq = (mp_request_t *) malloc(steps_per_batch*batches_inflight*num_streams*sizeof(mp_request_t));
     rreq = (mp_request_t *) malloc(steps_per_batch*(batches_inflight + 1)*num_streams*sizeof(mp_request_t));
-    CUDA_CHECK(cudaHostAlloc(&sdesc, sizeof(mp::mlx5::send_desc_t)*steps_per_batch*batches_inflight*num_streams));
-    CUDA_CHECK(cudaHostAlloc(&wdesc, sizeof(mp::mlx5::wait_desc_t)*steps_per_batch*batches_inflight*num_streams));
+    CUDA_CHECK(cudaHostAlloc((void **)&sdesc, sizeof(mp::mlx5::send_desc_t)*steps_per_batch*batches_inflight*num_streams, 0));
+    CUDA_CHECK(cudaHostAlloc((void **)&wdesc, sizeof(mp::mlx5::wait_desc_t)*steps_per_batch*batches_inflight*num_streams, 0));
 
-    streams = malloc(sizeof(cudaStream_t)*num_streams);
+    streams = (cudaStream_t *)malloc(sizeof(cudaStream_t)*num_streams);
     for (int i=0; i<num_streams; i++) { 
         CUDA_CHECK(cudaStreamCreateWithFlags(&streams[i], 0));
     }
@@ -823,16 +824,15 @@ int main (int argc, char *argv[])
         if (!my_rank) fprintf(stdout, "%10d", size);
 
         /*warmup*/
-        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, 0/*kernel_size*/, 1/*use_async*/);
+        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 0/*use_async*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
 
-        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, 0/*kernel_size*/, 0/*use_async*/);
+	latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 1/*use_async*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
 
-	/*Normal*/
-        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, 0/*kernel_size*/, 0/*use_async*/);
+        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 1/*use_async*/, 1/*use_kernel_ops*/, 1/*use_graphs*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
 
@@ -851,12 +851,16 @@ int main (int argc, char *argv[])
                 fprintf(stderr, "error in prof_init init.\n");
                 exit(-1);
             }
-            if (prof_init(&prof_async, 10000, 10000, "10us", 100, 1, tags)) {
-                fprintf(stderr, "error in prof_init init.\n");
-                exit(-1);
-            }
             prof_start = 1;
 	}
+
+	/*Normal*/
+        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, 0 /*no kernel*/, 0/*use_async*/);
+
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        if (!my_rank) fprintf(stdout, "\t   %8.2lf ", latency);
+        //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf)", latency, prepost_latency);
 
 	/*Normal + Kernel*/
         latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 0/*use_async*/);
@@ -866,28 +870,40 @@ int main (int argc, char *argv[])
         if (!my_rank) fprintf(stdout, "\t   %8.2lf ", latency);
         //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf)", latency, prepost_latency);
 
-        if (!my_rank) {
-            prof_start = 0;
-        }
-        cudaProfilerStop();
-
 	/*Async*/
         latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, 0/*kernel_size*/, 1/*use_async*/);
-        cudaProfilerStart();
-        if (!my_rank) {
-            prof_start = 1;
-        }
+
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        if (!my_rank) fprintf(stdout, "\t   %8.2lf ", latency);
+        //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf)", latency, prepost_latency);
+
+	/*Async + kernel*/
+        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 1/*use_async*/);
+
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        if (!my_rank) fprintf(stdout, "\t   %8.2lf ", latency);
+        //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf)", latency, prepost_latency);
+
+	/*Async + Graphs*/
+        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, 0 /*kernel_size*/, 1/*use_async*/, 1/*use_kernel_ops*/, 1/*use_graphs*/);
+
+        MPI_Barrier(MPI_COMM_WORLD);
+
+	if (!my_rank) fprintf(stdout, "\t   %8.2lf  \n", latency);
+        //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf) \n", latency, prepost_latency);
 
 	/*Async + Kernel + Graphs*/
         latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 1/*use_async*/, 1/*use_kernel_ops*/, 1/*use_graphs*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
 
-	prof_start = 0;
-        cudaProfilerStop();
-
 	if (!my_rank) fprintf(stdout, "\t   %8.2lf  \n", latency);
         //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf) \n", latency, prepost_latency);
+
+	prof_start = 0;
+        cudaProfilerStop();
 
         if (!my_rank && validate) fprintf(stdout, "SendRecv test passed validation with message size: %d \n", size);
 
