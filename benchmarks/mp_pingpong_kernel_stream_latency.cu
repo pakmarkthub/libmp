@@ -43,6 +43,15 @@
 
 #include "prof.h"
 
+#define NULL_CHECK(ptr)                                 \
+do {                                                    \
+    if (ptr == NULL) {                                  \
+        fprintf(stderr, "[%s:%d] memory allocation failed \n", \
+         __FILE__, __LINE__);				\
+        exit(-1);                                       \
+    }                                                   \
+} while (0)
+
 #define CUDA_CHECK(stmt)                                \
 do {                                                    \
     cudaError_t result = (stmt);                        \
@@ -86,37 +95,65 @@ int enable_debug_prints = 0;
 } while(0)
 
 #define MAX_SIZE 1*1024*1024 
-#define ITER_COUNT_SMALL 1000
-#define ITER_COUNT_LARGE 1000
+#define ITER_COUNT_SMALL 1024
+#define ITER_COUNT_LARGE 1024
 
+int comm_size, my_rank, peer;
+int steps_per_batch = 16, batches_inflight = 4;
+int enable_async = 1;
+
+int num_streams = 1;
+volatile uint32_t tracking_event = 0;
+
+//calc kernel params
+int gpu_num_sm;
+static const int over_sub_factor = 2;
+int calc_size = 128*1024;
+int use_calc_kernel = 0;
+
+__device__ int my_rank_d;
+__device__ uint32_t rindex_max_d;
+__device__ uint32_t sindex_max_d;
+
+//per-stream state
+typedef struct {
+    float *in = NULL;
+    float *out = NULL;
+    void *buf_d;
+    mp_request_t *sreq;
+    mp_request_t *rreq;
+    mp::mlx5::send_desc_t *sdesc;
+    mp::mlx5::send_desc_t *sdesc_d;
+    mp::mlx5::wait_desc_t *wdesc;
+    mp::mlx5::wait_desc_t *wdesc_d;
+    mp_reg_t reg; 
+    uint32_t *sindex_d;
+    uint32_t *windex_d;
+    cudaGraph_t subgraph;
+    cudaGraph_t subgraph_comms;
+    cudaStream_t stream;
+} stream_state_t; 
+
+//global state
+stream_state_t *stream_state;
+cudaStream_t main_stream;
+size_t buf_size; 
+cudaGraphNode_t emptyNode; 
+cudaGraph_t graph, graph_comms;
+cudaGraph_t subgraph, subgraph_comms;
+cudaGraphExec_t graphexec, graphexec_comms;
+
+//timing 
+cudaEvent_t start_event, stop_event;
+double time_start, time_stop;
+__device__ int counter;
+__device__ int clockrate;
+
+//profiling
 struct prof prof_normal;
 struct prof prof_async;
 int prof_start = 0;
 int prof_idx = 0;
-
-static const int over_sub_factor = 2;
-int gpu_num_sm;
-int enable_ud = 0;
-int gpu_id = -1;
-
-int comm_size, my_rank, peer;
-int steps_per_batch = 20, batches_inflight = 4;
-int enable_async = 1;
-int calc_size = 128*1024;
-int use_calc_size = 0;
-volatile uint32_t tracking_event = 0;
-float *in = NULL;
-float *out = NULL;
-int num_streams = 1;
-
-unsigned int *sindex_d = NULL;
-unsigned int *windex_d = NULL;
-__device__ unsigned int rreq_maxidx_d;
-__device__ unsigned int sreq_maxidx_d;
-__device__ int my_rank_d;
-
-__device__ int counter;
-__device__ int clockrate;
 
 __global__ void calc_kernel(int n, float c, float *in, float *out)
 {
@@ -149,7 +186,7 @@ int gpu_launch_calc_kernel(size_t size, cudaStream_t stream)
         return 0;
 }
 
-__global__ void dummy_kernel(double time)
+__global__ void poll_kernel(double time)
 {
     long long int start, stop;
     double usec;
@@ -162,62 +199,46 @@ __global__ void dummy_kernel(double time)
     } while(usec < time);
 }
 
-/*application and pack buffers*/
-void *buf = NULL, *sbuf_d = NULL, *rbuf_d = NULL;
-cudaStream_t *streams;
-cudaStream_t main_stream;
-cudaEvent_t start_event, stop_event;
-size_t buf_size; 
-
-/*mp specific objects*/
-mp_request_t *sreq = NULL;
-mp_request_t *rreq = NULL;
-mp::mlx5::send_desc_t *sdesc = NULL;
-mp::mlx5::send_desc_t *sdesc_d = NULL;
-mp::mlx5::wait_desc_t *wdesc = NULL;
-mp::mlx5::wait_desc_t *wdesc_d = NULL;
-cudaGraphExec_t graphexec, graphexec_comms;
-cudaGraph_t graph, subgraph, graph_comms, subgraph_comms;
-cudaGraphNode_t emptyNode; 
-
-mp_reg_t sreg, rreg; 
-double time_start, time_stop;
-
 int batch_to_rreq_idx (int batch_idx) { 
-     return (batch_idx % (batches_inflight + 1))*steps_per_batch*num_streams;
+     return (batch_idx % (batches_inflight + 1))*steps_per_batch;
 }
 
 int batch_to_sreq_idx (int batch_idx) { 
-     return (batch_idx % batches_inflight)*steps_per_batch*num_streams;
+     return (batch_idx % batches_inflight)*steps_per_batch;
 }
 
 void post_recv (int size, int batch_index)
 {
-    int j;
     int req_idx = batch_to_rreq_idx (batch_index);
  
-    for (j=0; j<steps_per_batch*num_streams; j++) {
-        MP_CHECK(mp_irecv ((void *)((uintptr_t)rbuf_d), size, peer, &rreg, &rreq[req_idx + j]));
+    for (int j=0; j<steps_per_batch; j++) {
+	for (int k=0; k<num_streams; k++) {
+            MP_CHECK(mp_irecv ((void *)stream_state[k].buf_d, 
+				size, peer*num_streams + k, &stream_state[k].reg, 
+				&stream_state[k].rreq[req_idx + j]));
+	}
     }
 }
 
 void wait_send (int batch_index) 
 {
-    int j;
     int req_idx = batch_to_sreq_idx (batch_index); 
 
-    for (j=0; j<steps_per_batch*num_streams; j++) {
-        MP_CHECK(mp_wait(&sreq[req_idx + j]));
+    for (int j=0; j<steps_per_batch; j++) {
+	for (int k=0; k<num_streams; k++) {
+            MP_CHECK(mp_wait(&stream_state[k].sreq[req_idx + j]));
+        }
     }
 }
 
 void wait_recv (int batch_index) 
 {
-    int j;
     int req_idx = batch_to_rreq_idx (batch_index);
  
-    for (j=0; j<steps_per_batch*num_streams; j++) {
-        MP_CHECK(mp_wait(&rreq[req_idx + j]));
+    for (int j=0; j<steps_per_batch; j++) {
+	for (int k=0; k<num_streams; k++) {
+            MP_CHECK(mp_wait(&stream_state[k].rreq[req_idx + j]));
+        }
     }
 }
 
@@ -234,13 +255,15 @@ __global__ void wait_op_kernel (mp::mlx5::wait_desc_t desc)
 
 __global__ void send_op_kernel_graph (mp::mlx5::send_desc_t *desc, unsigned int *index)
 {
-    unsigned int idx = atomicInc(index, sreq_maxidx_d-1);
+    unsigned int idx = *index;
+    *index = (*index+1)%sindex_max_d;
     mp::device::mlx5::send(desc[idx]);
 }
 
 __global__ void wait_op_kernel_graph (mp::mlx5::wait_desc_t *desc, unsigned int *index)
 {
-    unsigned int idx = atomicInc(index, rreq_maxidx_d-1);
+    unsigned int idx = *index;
+    *index = (*index+1)%rindex_max_d;
     mp::device::mlx5::wait(desc[idx]);
     mp::device::mlx5::signal(desc[idx]);
 }
@@ -248,150 +271,177 @@ __global__ void wait_op_kernel_graph (mp::mlx5::wait_desc_t *desc, unsigned int 
 void create_async_graph (size_t size, double kernel_size) 
 {
     std::vector<cudaGraphNode_t> nodeDependencies;
-    cudaKernelNodeParams waitParams, sendParams, calcKernelParams, dummyKernelParams;
-    cudaGraphNode_t sendNode, waitNode, kernelNode, emptyNode, subgraphnode[2];
+    cudaGraphNode_t sendNode, waitNode, kernelNode;
+    cudaKernelNodeParams waitParams, sendParams, calcKernelParams, pollKernelParams;
+    cudaGraphNode_t subgraphNode, subgraphNode_prev;
+    int sindex_max = batches_inflight*steps_per_batch;
+    int rindex_max = (batches_inflight + 1)*steps_per_batch;
+    CUDA_CHECK(cudaMemcpyToSymbol(sindex_max_d, (void *)&sindex_max, sizeof(int), 
+        		    	0, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpyToSymbol(rindex_max_d, (void *)&rindex_max, sizeof(int), 
+        		    	0, cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMalloc((void **)&in, size));
-    CUDA_CHECK(cudaMalloc((void **)&out, size));
-    CUDA_CHECK(cudaMalloc((void **)&sindex_d, sizeof(unsigned int)));
-    CUDA_CHECK(cudaMalloc((void **)&windex_d, sizeof(unsigned int)));
-    CUDA_CHECK(cudaMemset((void *)in, 1, size));
-    CUDA_CHECK(cudaMemset((void *)out, 1, size));
-    CUDA_CHECK(cudaMemset((void *)sindex_d, 0, sizeof(unsigned int)));
-    CUDA_CHECK(cudaMemset((void *)windex_d, 0, sizeof(unsigned int)));
-
-    int sreq_maxidx = batches_inflight*steps_per_batch*num_streams;
-    CUDA_CHECK(cudaMemcpyToSymbol(sreq_maxidx_d, (void *)&sreq_maxidx, sizeof(int), 
-			    	0, cudaMemcpyHostToDevice));
-    int rreq_maxidx = (batches_inflight + 1)*steps_per_batch*num_streams;
-    CUDA_CHECK(cudaMemcpyToSymbol(rreq_maxidx_d, (void *)&rreq_maxidx, sizeof(int), 
-			    	0, cudaMemcpyHostToDevice));
-
-    CUDA_CHECK(cudaGraphCreate(&subgraph, 0));
-    CUDA_CHECK(cudaGraphCreate(&subgraph_comms, 0));
     CUDA_CHECK(cudaGraphCreate(&graph, 0));
     CUDA_CHECK(cudaGraphCreate(&graph_comms, 0));
+    CUDA_CHECK(cudaGraphCreate(&subgraph, 0));
+    CUDA_CHECK(cudaGraphCreate(&subgraph_comms, 0));
 
-    waitParams.func = (void*)wait_op_kernel_graph;
-    waitParams.gridDim = 1;
-    waitParams.blockDim = 1;
-    waitParams.sharedMemBytes = 0;
-    void *waitArgs[2] = {(void*)&wdesc_d, (void *)&windex_d};
-    waitParams.kernelParams = waitArgs;
-    waitParams.extra = NULL;
+    for(int k=0; k<num_streams; k++) {
+	stream_state_t *curr_stream = (stream_state + k); 
 
-    sendParams.func = (void*)send_op_kernel_graph;
-    sendParams.gridDim = 1;
-    sendParams.blockDim = 1;
-    sendParams.sharedMemBytes = 0;
-    void *sendArgs[2] = {(void*)&sdesc_d, (void *)&sindex_d};
-    sendParams.kernelParams = sendArgs;
-    sendParams.extra = NULL;
+        CUDA_CHECK(cudaMalloc((void **)&curr_stream->in, kernel_size));
+        CUDA_CHECK(cudaMalloc((void **)&curr_stream->out, kernel_size));
+        CUDA_CHECK(cudaMalloc((void **)&curr_stream->sindex_d, sizeof(unsigned int)));
+        CUDA_CHECK(cudaMalloc((void **)&curr_stream->windex_d, sizeof(unsigned int)));
+        CUDA_CHECK(cudaMemset((void *)curr_stream->in, 1, kernel_size));
+        CUDA_CHECK(cudaMemset((void *)curr_stream->out, 1, kernel_size));
+        CUDA_CHECK(cudaMemset((void *)curr_stream->sindex_d, 0, sizeof(unsigned int)));
+        CUDA_CHECK(cudaMemset((void *)curr_stream->windex_d, 0, sizeof(unsigned int)));
 
-    const float value = 0.1F; 
-    int n = kernel_size / sizeof(float);
+	waitParams.func = (void*)wait_op_kernel_graph;
+        waitParams.gridDim = 1;
+        waitParams.blockDim = 1;
+        waitParams.sharedMemBytes = 0;
+        void *waitArgs[2] = {(void*)&curr_stream->wdesc_d, (void *)&curr_stream->windex_d};
+        waitParams.kernelParams = waitArgs;
+        waitParams.extra = NULL;
 
-    calcKernelParams.func = (void*)calc_kernel;
-    calcKernelParams.gridDim = over_sub_factor * gpu_num_sm;
-    calcKernelParams.blockDim = 32*2;
-    calcKernelParams.sharedMemBytes = 0;
-    void *calcKernelArgs[4] = {(void*)&n, (void *)&value, (void *)&in, (void *)&out};
-    calcKernelParams.kernelParams = calcKernelArgs;
-    calcKernelParams.extra = NULL;
+        sendParams.func = (void*)send_op_kernel_graph;
+        sendParams.gridDim = 1;
+        sendParams.blockDim = 1;
+        sendParams.sharedMemBytes = 0;
+        void *sendArgs[2] = {(void*)&curr_stream->sdesc_d, (void *)&curr_stream->sindex_d};
+        sendParams.kernelParams = sendArgs;
+        sendParams.extra = NULL;
 
-    dummyKernelParams.func = (void*)dummy_kernel;
-    dummyKernelParams.gridDim = 1;
-    dummyKernelParams.blockDim = 1;
-    dummyKernelParams.sharedMemBytes = 0;
-    void *dummyKernelArgs[1] = {(void*)&kernel_size};
-    dummyKernelParams.kernelParams = dummyKernelArgs;
-    dummyKernelParams.extra = NULL;
-   
-    //graph with compute and comms 
-    CUDA_CHECK(cudaGraphAddEmptyNode(&emptyNode, subgraph, NULL, 0));
+        const float value = 0.1F; 
+        int n = kernel_size / sizeof(float);
 
-    if (!my_rank) { 
-	for(int k=0; k<num_streams; k++) {
-           nodeDependencies.clear();
-           nodeDependencies.push_back(emptyNode);
-     	   CUDA_CHECK(cudaGraphAddKernelNode(&waitNode, subgraph, nodeDependencies.data(), nodeDependencies.size(), &waitParams));
+        calcKernelParams.func = (void*)calc_kernel;
+        calcKernelParams.gridDim = over_sub_factor * gpu_num_sm;
+        calcKernelParams.blockDim = 32*2;
+        calcKernelParams.sharedMemBytes = 0;
+        void *calcKernelArgs[4] = {(void*)&n, (void *)&value, (void *)&curr_stream->in, (void *)&curr_stream->out};
+        calcKernelParams.kernelParams = calcKernelArgs;
+        calcKernelParams.extra = NULL;
+
+        pollKernelParams.func = (void*)poll_kernel;
+        pollKernelParams.gridDim = 1;
+        pollKernelParams.blockDim = 1;
+        pollKernelParams.sharedMemBytes = 0;
+        void *pollKernelArgs[1] = {(void*)&kernel_size};
+        pollKernelParams.kernelParams = pollKernelArgs;
+        pollKernelParams.extra = NULL;
+
+     	CUDA_CHECK(cudaGraphCreate(&curr_stream->subgraph, 0));
+        CUDA_CHECK(cudaGraphCreate(&curr_stream->subgraph_comms, 0));
+
+	//subgraph with comms + comp
+        if (!my_rank) {
+	   nodeDependencies.clear();
+     	   CUDA_CHECK(cudaGraphAddKernelNode(&waitNode, curr_stream->subgraph, nodeDependencies.data(), 
+	        		   nodeDependencies.size(), &waitParams));
 
 	   nodeDependencies.clear();
            nodeDependencies.push_back(waitNode);
-           if (use_calc_size > 0) {
-               CUDA_CHECK(cudaGraphAddKernelNode(&kernelNode, subgraph, nodeDependencies.data(), nodeDependencies.size(), &calcKernelParams));
+           if (use_calc_kernel > 0) {
+               CUDA_CHECK(cudaGraphAddKernelNode(&kernelNode, curr_stream->subgraph, nodeDependencies.data(), 
+	        		       nodeDependencies.size(), &calcKernelParams));
            } else { 
-               CUDA_CHECK(cudaGraphAddKernelNode(&kernelNode, subgraph, nodeDependencies.data(), nodeDependencies.size(), &dummyKernelParams));
+               CUDA_CHECK(cudaGraphAddKernelNode(&kernelNode, curr_stream->subgraph, nodeDependencies.data(), 
+	        		       nodeDependencies.size(), &pollKernelParams));
            }
 
 	   nodeDependencies.clear();
            nodeDependencies.push_back(kernelNode);
-           CUDA_CHECK(cudaGraphAddKernelNode(&sendNode, subgraph, nodeDependencies.data(), nodeDependencies.size(), &sendParams));
-	}
-    } else {
-	for(int k=0; k<num_streams; k++) {
-           nodeDependencies.clear();
-           nodeDependencies.push_back(emptyNode);
-           CUDA_CHECK(cudaGraphAddKernelNode(&sendNode, subgraph, nodeDependencies.data(), nodeDependencies.size(), &sendParams));
+           CUDA_CHECK(cudaGraphAddKernelNode(&sendNode, curr_stream->subgraph, nodeDependencies.data(), 
+			   	nodeDependencies.size(), &sendParams));
+	} else {
+	   nodeDependencies.clear();
+           CUDA_CHECK(cudaGraphAddKernelNode(&sendNode, curr_stream->subgraph, nodeDependencies.data(), 
+	     		   	nodeDependencies.size(), &sendParams));
 
 	   nodeDependencies.clear();
            nodeDependencies.push_back(sendNode);
-           CUDA_CHECK(cudaGraphAddKernelNode(&waitNode, subgraph, nodeDependencies.data(), nodeDependencies.size(), &waitParams));
+     	   CUDA_CHECK(cudaGraphAddKernelNode(&waitNode, curr_stream->subgraph, nodeDependencies.data(), 
+	     		   nodeDependencies.size(), &waitParams));
 
 	   nodeDependencies.clear();
            nodeDependencies.push_back(waitNode);
-           if (use_calc_size > 0) {
-               CUDA_CHECK(cudaGraphAddKernelNode(&kernelNode, subgraph, nodeDependencies.data(), nodeDependencies.size(), &calcKernelParams));
+           if (use_calc_kernel > 0) {
+               CUDA_CHECK(cudaGraphAddKernelNode(&kernelNode, curr_stream->subgraph, nodeDependencies.data(), 
+	     		       nodeDependencies.size(), &calcKernelParams));
            } else { 
-               CUDA_CHECK(cudaGraphAddKernelNode(&kernelNode, subgraph, nodeDependencies.data(), nodeDependencies.size(), &dummyKernelParams));
+               CUDA_CHECK(cudaGraphAddKernelNode(&kernelNode, curr_stream->subgraph, nodeDependencies.data(), 
+	     		       nodeDependencies.size(), &pollKernelParams));
            }
-        }
-    }
-  
-    CUDA_CHECK(cudaGraphAddChildGraphNode (&subgraphnode[0], graph, NULL, 0, subgraph)); 
-    for (int k=1; k<steps_per_batch; k++) {
-        nodeDependencies.clear();
-        nodeDependencies.push_back(subgraphnode[(k-1)%2]);
-	CUDA_CHECK(cudaGraphAddChildGraphNode (&subgraphnode[k%2], graph, nodeDependencies.data(), nodeDependencies.size(), subgraph));
+    	}
+
+	//subgraph with comms
+        if (!my_rank) {
+	   nodeDependencies.clear();
+     	   CUDA_CHECK(cudaGraphAddKernelNode(&waitNode, curr_stream->subgraph_comms, nodeDependencies.data(), 
+	        		   nodeDependencies.size(), &waitParams));
+
+	   nodeDependencies.clear();
+           nodeDependencies.push_back(waitNode);
+           CUDA_CHECK(cudaGraphAddKernelNode(&sendNode, curr_stream->subgraph_comms, nodeDependencies.data(), 
+	     		   	nodeDependencies.size(), &sendParams));
+	   
+        } else {
+	   nodeDependencies.clear();
+           CUDA_CHECK(cudaGraphAddKernelNode(&sendNode, curr_stream->subgraph_comms, nodeDependencies.data(), 
+	     		   	nodeDependencies.size(), &sendParams));
+
+	   nodeDependencies.clear();
+           nodeDependencies.push_back(sendNode);
+     	   CUDA_CHECK(cudaGraphAddKernelNode(&waitNode, curr_stream->subgraph_comms, nodeDependencies.data(), 
+	     		   nodeDependencies.size(), &waitParams));
+           
+    	}
     }
 
+    //graph with compute and comms 
+    CUDA_CHECK(cudaGraphAddEmptyNode(&emptyNode, subgraph, NULL, 0));
+    nodeDependencies.clear();
+    nodeDependencies.push_back(emptyNode);
+    for(int k=0; k<num_streams; k++) {
+       CUDA_CHECK(cudaGraphAddChildGraphNode(&subgraphNode, subgraph, nodeDependencies.data(), 
+			       		nodeDependencies.size(), 
+			       		stream_state[k].subgraph));
+    }
+ 
+    //graph with comms
+    CUDA_CHECK(cudaGraphAddEmptyNode(&emptyNode, subgraph_comms, NULL, 0));
+    nodeDependencies.clear();
+    nodeDependencies.push_back(emptyNode);
+    for(int k=0; k<num_streams; k++) {
+       CUDA_CHECK(cudaGraphAddChildGraphNode(&subgraphNode, subgraph_comms, nodeDependencies.data(), nodeDependencies.size(), 
+			       		stream_state[k].subgraph_comms));
+    }
+
+    //create a graph for a batch of iterations
+    //graph with compute and comms 
+    CUDA_CHECK(cudaGraphAddChildGraphNode (&subgraphNode_prev, graph, NULL, 0, subgraph_comms)); 
+    for (int k=1; k<steps_per_batch; k++) {
+        nodeDependencies.clear();
+        nodeDependencies.push_back(subgraphNode_prev);
+	CUDA_CHECK(cudaGraphAddChildGraphNode (&subgraphNode, graph, nodeDependencies.data(), 
+				nodeDependencies.size(), subgraph));
+	subgraphNode_prev = subgraphNode;
+    }
     CUDA_CHECK(cudaGraphInstantiate(&graphexec, graph, NULL, NULL, 0));
 
-    //graph with comms only
-    CUDA_CHECK(cudaGraphAddEmptyNode(&emptyNode, subgraph_comms, NULL, 0));
-
-    if (!my_rank) { 
-	for(int k=0; k<num_streams; k++) {
-           nodeDependencies.clear();
-           nodeDependencies.push_back(emptyNode);
-     	   CUDA_CHECK(cudaGraphAddKernelNode(&waitNode, subgraph_comms, nodeDependencies.data(), nodeDependencies.size(), &waitParams));
-
-	   nodeDependencies.clear();
-           nodeDependencies.push_back(waitNode);
-           CUDA_CHECK(cudaGraphAddKernelNode(&sendNode, subgraph_comms, nodeDependencies.data(), nodeDependencies.size(), &sendParams));
-	}
-    } else {
-	for(int k=0; k<num_streams; k++) {
-           nodeDependencies.clear();
-           nodeDependencies.push_back(emptyNode);
-           CUDA_CHECK(cudaGraphAddKernelNode(&sendNode, subgraph_comms, nodeDependencies.data(), nodeDependencies.size(), &sendParams));
-
-	   nodeDependencies.clear();
-           nodeDependencies.push_back(sendNode);
-           CUDA_CHECK(cudaGraphAddKernelNode(&waitNode, subgraph_comms, nodeDependencies.data(), nodeDependencies.size(), &waitParams));
-        }
-    }
-  
-    CUDA_CHECK(cudaGraphAddChildGraphNode (&subgraphnode[0], graph_comms, NULL, 0, subgraph_comms)); 
+    //graph with comms 
+    CUDA_CHECK(cudaGraphAddChildGraphNode (&subgraphNode_prev, graph_comms, NULL, 0, subgraph_comms)); 
     for (int k=1; k<steps_per_batch; k++) {
         nodeDependencies.clear();
-        nodeDependencies.push_back(subgraphnode[(k-1)%2]);
-	CUDA_CHECK(cudaGraphAddChildGraphNode (&subgraphnode[k%2], graph_comms, nodeDependencies.data(), nodeDependencies.size(), subgraph_comms));
+        nodeDependencies.push_back(subgraphNode_prev);
+	CUDA_CHECK(cudaGraphAddChildGraphNode (&subgraphNode, graph_comms, nodeDependencies.data(), 
+				nodeDependencies.size(), subgraph_comms));
+	subgraphNode_prev = subgraphNode;
     }
-
     CUDA_CHECK(cudaGraphInstantiate(&graphexec_comms, graph_comms, NULL, NULL, 0));
-
-
 }
 
 void destroy_async_graph () 
@@ -402,6 +452,10 @@ void destroy_async_graph ()
     CUDA_CHECK(cudaGraphDestroy(graph_comms));
     CUDA_CHECK(cudaGraphDestroy(subgraph));
     CUDA_CHECK(cudaGraphDestroy(subgraph_comms));
+    for(int k=0; k<num_streams; k++) {
+        CUDA_CHECK(cudaGraphDestroy(stream_state[k].subgraph));
+        CUDA_CHECK(cudaGraphDestroy(stream_state[k].subgraph_comms));
+    }
 }
 
 void prepare_work_async_graphs (int size, int batch_index)
@@ -410,20 +464,24 @@ void prepare_work_async_graphs (int size, int batch_index)
     int rreq_idx = batch_to_rreq_idx (batch_index);
 
     for (int j=0; j<steps_per_batch; j++) {
-	for(int k=0; k<num_streams; k++) { 
- 	    int s_idx = sreq_idx + j*num_streams + k;
-	    int r_idx = rreq_idx + j*num_streams + k;
+	for(int k=0; k<num_streams; k++) {
+	    stream_state_t *curr_stream = (stream_state + k);   	
+ 	    int s_idx = sreq_idx + j;
+	    int r_idx = rreq_idx + j;
 
 	    if (!my_rank) {
-                MP_CHECK(mp::mlx5::get_descriptors(&wdesc[r_idx], &rreq[r_idx]));
+                MP_CHECK(mp::mlx5::get_descriptors(&curr_stream->wdesc[r_idx], &curr_stream->rreq[r_idx]));
 
-                MP_CHECK(mp_send_prepare((void *)((uintptr_t)sbuf_d), size, peer, &sreg, &sreq[s_idx]));
-                MP_CHECK(mp::mlx5::get_descriptors(&sdesc[sreq_idx], &sreq[s_idx]));
+                MP_CHECK(mp_send_prepare((void *)curr_stream->buf_d, size, peer*num_streams + k, 
+					&curr_stream->reg, &curr_stream->sreq[s_idx]));
+                MP_CHECK(mp::mlx5::get_descriptors(&curr_stream->sdesc[s_idx], 
+					&curr_stream->sreq[s_idx]));
    	    } else {
-   	        MP_CHECK(mp_send_prepare((void *)((uintptr_t)sbuf_d), size, peer, &sreg, &sreq[s_idx]));
-                MP_CHECK(mp::mlx5::get_descriptors(&sdesc[sreq_idx], &sreq[s_idx]));
+   	        MP_CHECK(mp_send_prepare((void *)curr_stream->buf_d, size, peer*num_streams + k, 
+					&curr_stream->reg, &curr_stream->sreq[s_idx]));
+                MP_CHECK(mp::mlx5::get_descriptors(&curr_stream->sdesc[s_idx], &curr_stream->sreq[s_idx]));
 
-	        MP_CHECK(mp::mlx5::get_descriptors(&wdesc[r_idx], &rreq[r_idx]));
+	        MP_CHECK(mp::mlx5::get_descriptors(&curr_stream->wdesc[r_idx], &curr_stream->rreq[r_idx]));
  	    }	
 	}
     }
@@ -437,40 +495,41 @@ void trigger_work_async_kernels (int size, int batch_index, double kernel_size)
     for (int j=0; j<steps_per_batch; j++) {
 	CUDA_CHECK(cudaEventRecord(start_event, main_stream));	
 	for(int k=0; k<num_streams; k++) {
-	    int s_idx = sreq_idx + j*num_streams + k;
-	    int r_idx = rreq_idx + j*num_streams + k;
+	    stream_state_t *curr_stream = (stream_state + k);   	
+	    int s_idx = sreq_idx + j;
+	    int r_idx = rreq_idx + j;
 
-   	    CUDA_CHECK(cudaStreamWaitEvent(streams[k], start_event, 0));	
+   	    CUDA_CHECK(cudaStreamWaitEvent(curr_stream->stream, start_event, 0));	
 
 	    if (!my_rank) {
-	        wait_op_kernel<<<1,1,0,streams[k]>>>(wdesc[r_idx]);
+	        wait_op_kernel<<<1,1,0,curr_stream->stream>>>(curr_stream->wdesc[r_idx]);
                 CUDA_CHECK(cudaGetLastError());
 
                 if (kernel_size > 0) {
-                    if (use_calc_size > 0)
-                       gpu_launch_calc_kernel(kernel_size, streams[k]);
+                    if (use_calc_kernel > 0)
+                       gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
                     else
-                       dummy_kernel <<<1, 1, 0, streams[k]>>> (kernel_size);
+                       poll_kernel <<<1, 1, 0, curr_stream->stream>>> (kernel_size);
                 }
 
-	        send_op_kernel<<<1,1,0,streams[k]>>>(sdesc[s_idx]);
+	        send_op_kernel<<<1,1,0,curr_stream->stream>>>(curr_stream->sdesc[s_idx]);
                 CUDA_CHECK(cudaGetLastError());
  	    } else {
-	       send_op_kernel<<<1,1,0,streams[k]>>>(sdesc[s_idx]);
+	       send_op_kernel<<<1,1,0,curr_stream->stream>>>(curr_stream->sdesc[s_idx]);
                CUDA_CHECK(cudaGetLastError());
 
-	       wait_op_kernel<<<1,1,0,streams[k]>>>(wdesc[r_idx]);
+	       wait_op_kernel<<<1,1,0,curr_stream->stream>>>(curr_stream->wdesc[r_idx]);
                CUDA_CHECK(cudaGetLastError());
 
                if (kernel_size > 0) {
-                   if (use_calc_size > 0)
-                      gpu_launch_calc_kernel(kernel_size, streams[k]);
+                   if (use_calc_kernel > 0)
+                      gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
                    else
-                      dummy_kernel <<<1, 1, 0, streams[k]>>> (kernel_size);
+                      poll_kernel <<<1, 1, 0, curr_stream->stream>>>(kernel_size);
                }
  	    }
 
-	    CUDA_CHECK(cudaEventRecord(stop_event, streams[k]));
+	    CUDA_CHECK(cudaEventRecord(stop_event, curr_stream->stream));
 	    CUDA_CHECK(cudaStreamWaitEvent(main_stream, stop_event, 0));
 	}
     }
@@ -492,49 +551,72 @@ void post_work_async_kernels (int size, int batch_index, double kernel_size)
     int rreq_idx = batch_to_rreq_idx (batch_index);
 
     for (int j=0; j<steps_per_batch; j++) {
-	CUDA_CHECK(cudaEventRecord(start_event, main_stream));	
+	int s_idx = sreq_idx + j;
+	int r_idx = rreq_idx + j;
+	CUDA_CHECK(cudaEventRecord(start_event, main_stream));	  	
+
 	for(int k=0; k<num_streams; k++) {
-	    int s_idx = sreq_idx + j*num_streams + k;
-	    int r_idx = rreq_idx + j*num_streams + k;
+	    stream_state_t *curr_stream = (stream_state + k); 
+      	    CUDA_CHECK(cudaStreamWaitEvent(curr_stream->stream, start_event, 0));	
+	}
 
-   	    CUDA_CHECK(cudaStreamWaitEvent(streams[k], start_event, 0));	
-
-	    if (!my_rank) {
-                MP_CHECK(mp::mlx5::get_descriptors(&wdesc[r_idx], &rreq[r_idx]));
-	        wait_op_kernel<<<1,1,0,streams[k]>>>(wdesc[r_idx]);
+	if (!my_rank) {
+	    for(int k=0; k<num_streams; k++) {
+	        stream_state_t *curr_stream = (stream_state + k); 
+                MP_CHECK(mp::mlx5::get_descriptors(&curr_stream->wdesc[r_idx], &curr_stream->rreq[r_idx]));
+	        wait_op_kernel<<<1,1,0,curr_stream->stream>>>(curr_stream->wdesc[r_idx]);
                 CUDA_CHECK(cudaGetLastError());
+	    }
 
+	    for(int k=0; k<num_streams; k++) {
+	        stream_state_t *curr_stream = (stream_state + k); 
                 if (kernel_size > 0) {
-                    if (use_calc_size > 0)
-                       gpu_launch_calc_kernel(kernel_size, streams[k]);
+                    if (use_calc_kernel > 0)
+                       gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
                     else
-                       dummy_kernel <<<1, 1, 0, streams[k]>>> (kernel_size);
+                       poll_kernel <<<1, 1, 0, curr_stream->stream>>> (kernel_size);
                 }
+	    }
 
-                MP_CHECK(mp_send_prepare((void *)((uintptr_t)sbuf_d), size, peer, &sreg, &sreq[s_idx]));
-                MP_CHECK(mp::mlx5::get_descriptors(&sdesc[s_idx], &sreq[s_idx]));
-	        send_op_kernel<<<1,1,0,streams[k]>>>(sdesc[s_idx]);
+	    for(int k=0; k<num_streams; k++) {
+	        stream_state_t *curr_stream = (stream_state + k); 
+                MP_CHECK(mp_send_prepare((void *)stream_state[k].buf_d, size, peer*num_streams + k, 
+	        			&curr_stream->reg, &curr_stream->sreq[s_idx]));
+                MP_CHECK(mp::mlx5::get_descriptors(&curr_stream->sdesc[s_idx], &curr_stream->sreq[s_idx]));
+	        send_op_kernel<<<1,1,0,curr_stream->stream>>>(curr_stream->sdesc[s_idx]);
                 CUDA_CHECK(cudaGetLastError());
- 	    } else {
-               MP_CHECK(mp_send_prepare((void *)((uintptr_t)sbuf_d), size, peer, &sreg, &sreq[s_idx]));
-               MP_CHECK(mp::mlx5::get_descriptors(&sdesc[s_idx], &sreq[s_idx]));
-	       send_op_kernel<<<1,1,0,streams[k]>>>(sdesc[s_idx]);
-               CUDA_CHECK(cudaGetLastError());
+	   }
+ 	} else {
+	    for(int k=0; k<num_streams; k++) {
+	        stream_state_t *curr_stream = (stream_state + k); 
+                MP_CHECK(mp_send_prepare((void *)stream_state[k].buf_d, size, peer*num_streams + k, 
+	         		       &curr_stream->reg, &curr_stream->sreq[s_idx]));
+                MP_CHECK(mp::mlx5::get_descriptors(&curr_stream->sdesc[s_idx], &curr_stream->sreq[s_idx]));
+	        send_op_kernel<<<1,1,0,curr_stream->stream>>>(curr_stream->sdesc[s_idx]);
+                CUDA_CHECK(cudaGetLastError());
+	   }
 
-	       MP_CHECK(mp::mlx5::get_descriptors(&wdesc[r_idx], &rreq[r_idx]));
-	       wait_op_kernel<<<1,1,0,streams[k]>>>(wdesc[r_idx]);
-               CUDA_CHECK(cudaGetLastError());
+	   for(int k=0; k<num_streams; k++) {
+	        stream_state_t *curr_stream = (stream_state + k); 
+	        MP_CHECK(mp::mlx5::get_descriptors(&curr_stream->wdesc[r_idx], &curr_stream->rreq[r_idx]));
+	        wait_op_kernel<<<1,1,0,curr_stream->stream>>>(curr_stream->wdesc[r_idx]);
+                CUDA_CHECK(cudaGetLastError());
+	   }
 
-               if (kernel_size > 0) {
-                   if (use_calc_size > 0)
-                      gpu_launch_calc_kernel(kernel_size, streams[k]);
-                   else
-                      dummy_kernel <<<1, 1, 0, streams[k]>>> (kernel_size);
-               }
- 	    }
-
-	    CUDA_CHECK(cudaEventRecord(stop_event, streams[k]));
-	    CUDA_CHECK(cudaStreamWaitEvent(main_stream, stop_event, 0));
+	   for(int k=0; k<num_streams; k++) {
+	        stream_state_t *curr_stream = (stream_state + k); 
+                if (kernel_size > 0) {
+                    if (use_calc_kernel > 0)
+                       gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
+                    else
+                       poll_kernel <<<1, 1, 0, curr_stream->stream>>> (kernel_size);
+                }
+	   }
+ 	}
+	for(int k=0; k<num_streams; k++) {
+	     stream_state_t *curr_stream = (stream_state + k); 
+	     CUDA_CHECK(cudaEventRecord(stop_event, curr_stream->stream));
+	     CUDA_CHECK(cudaStreamWaitEvent(main_stream, stop_event, 0));
 	}
     }
 }
@@ -545,43 +627,68 @@ void post_work_async (int size, int batch_index, double kernel_size)
     int rreq_idx = batch_to_rreq_idx (batch_index);
    
     for (int j=0; j<steps_per_batch; j++) {
-	CUDA_CHECK(cudaEventRecord(start_event, main_stream));	
+	CUDA_CHECK(cudaEventRecord(start_event, main_stream));
+	int s_idx = sreq_idx + j;
+	int r_idx = rreq_idx + j;
+
 	for(int k=0; k<num_streams; k++) {
-	    int s_idx = sreq_idx + j*num_streams + k;
-	    int r_idx = rreq_idx + j*num_streams + k;
+	    stream_state_t *curr_stream = (stream_state + k); 
+  	    CUDA_CHECK(cudaStreamWaitEvent(curr_stream->stream, start_event, 0));
+	}
 
-  	    CUDA_CHECK(cudaStreamWaitEvent(streams[k], start_event, 0));	
+	if (!my_rank) { 
+	    for(int k=0; k<num_streams; k++) {
+	        stream_state_t *curr_stream = (stream_state + k); 
+   	        MP_CHECK(mp_wait_on_stream(&curr_stream->rreq[r_idx], curr_stream->stream));
+	    }
 
-	    if (!my_rank) { 
-                MP_CHECK(mp_wait_on_stream(&rreq[r_idx], streams[k]));
-
+	    for(int k=0; k<num_streams; k++) {
+	        stream_state_t *curr_stream = (stream_state + k); 
+ 
                 if (kernel_size > 0) {
-                    if (use_calc_size > 0)
-                       gpu_launch_calc_kernel(kernel_size, streams[k]);
+                    if (use_calc_kernel > 0)
+                       gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
                     else
-                       dummy_kernel <<<1, 1, 0, streams[k]>>> (kernel_size);
-                }
-
-                MP_CHECK(mp_isend_on_stream ((void *)((uintptr_t)sbuf_d), size, peer, &sreg, 
-					&sreq[s_idx], streams[k]));
-	    } else {
-                MP_CHECK(mp_isend_on_stream ((void *)((uintptr_t)sbuf_d), size, peer, &sreg, 
-					&sreq[s_idx], streams[k]));
-
-                MP_CHECK(mp_wait_on_stream(&rreq[r_idx], streams[k]));
-
-                if (kernel_size > 0) {
-                    if (use_calc_size > 0)
-                       gpu_launch_calc_kernel(kernel_size, streams[k]);
-                    else
-                       dummy_kernel <<<1, 1, 0, streams[k]>>> (kernel_size);
+                       poll_kernel <<<1, 1, 0, curr_stream->stream>>> (kernel_size);
                 }
 	    }
 
-	    CUDA_CHECK(cudaEventRecord(stop_event, streams[k]));
+	    for(int k=0; k<num_streams; k++) {
+	        stream_state_t *curr_stream = (stream_state + k); 
+                MP_CHECK(mp_isend_on_stream ((void *)curr_stream->buf_d, size, peer*num_streams + k, 
+	        			&curr_stream->reg, &curr_stream->sreq[s_idx], 
+	        			curr_stream->stream));
+	    }
+   	} else {
+	    for(int k=0; k<num_streams; k++) {
+	        stream_state_t *curr_stream = (stream_state + k); 
+                MP_CHECK(mp_isend_on_stream ((void *)curr_stream->buf_d, size, peer*num_streams + k, 
+	        			&curr_stream->reg, &curr_stream->sreq[s_idx], 
+	        			curr_stream->stream));
+	    }
+
+	    for(int k=0; k<num_streams; k++) {
+	        stream_state_t *curr_stream = (stream_state + k); 
+                MP_CHECK(mp_wait_on_stream(&curr_stream->rreq[r_idx], curr_stream->stream));
+	    }
+
+	    for(int k=0; k<num_streams; k++) {
+	        stream_state_t *curr_stream = (stream_state + k); 
+                if (kernel_size > 0) {
+                    if (use_calc_kernel > 0)
+                       gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
+                    else
+                       poll_kernel <<<1, 1, 0, curr_stream->stream>>> (kernel_size);
+                }
+	    }
+	}
+
+	for(int k=0; k<num_streams; k++) {
+	    stream_state_t *curr_stream = (stream_state + k); 
+	    CUDA_CHECK(cudaEventRecord(stop_event, curr_stream->stream));
 	    CUDA_CHECK(cudaStreamWaitEvent(main_stream, stop_event, 0));
 	}
-    }
+   }
 }
 
 void post_work_sync (int size, int batch_index, double kernel_size) 
@@ -592,39 +699,47 @@ void post_work_sync (int size, int batch_index, double kernel_size)
     for (int j=0; j<steps_per_batch; j++) {
 	if (!my_rank) {
 	    for(int k=0; k<num_streams; k++) {
-		MP_CHECK(mp_wait(&rreq[rreq_idx + j*num_streams + k]));
+	        stream_state_t *curr_stream = (stream_state + k); 
+
+		MP_CHECK(mp_wait(&curr_stream->rreq[rreq_idx + j]));
 
                 if (kernel_size > 0) {
-                    if (use_calc_size > 0)
-                       gpu_launch_calc_kernel(kernel_size, streams[k]);
-                    else
-                       dummy_kernel <<<1, 1, 0, streams[k]>>> (kernel_size);
+                    //if (use_calc_kernel > 0)
+                    //   gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
+                    //else
+                       poll_kernel <<<1, 1, 0, curr_stream->stream>>> (kernel_size);
                 }
 	    }
 
 	    for(int k=0; k<num_streams; k++) { 
-                CUDA_CHECK(cudaStreamSynchronize(streams[k]));
+	        stream_state_t *curr_stream = (stream_state + k); 
 
-                MP_CHECK(mp_isend ((void *)((uintptr_t)sbuf_d), size, peer, &sreg, &sreq[sreq_idx + j*num_streams + k]));
+		CUDA_CHECK(cudaStreamSynchronize(curr_stream->stream));
+
+                MP_CHECK(mp_isend ((void *)curr_stream->buf_d, size, peer*num_streams + k, 
+					&curr_stream->reg, &curr_stream->sreq[sreq_idx + j]));
 	    }
        } else {
 	    for(int k=0; k<num_streams; k++) { 
-                MP_CHECK(mp_isend ((void *)((uintptr_t)sbuf_d), size, peer, &sreg, &sreq[sreq_idx + j*num_streams + k]));
+	        stream_state_t *curr_stream = (stream_state + k); 
+                MP_CHECK(mp_isend ((void *)curr_stream->buf_d, size, peer*num_streams + k, 
+					&curr_stream->reg, &curr_stream->sreq[sreq_idx + j]));
 	    }
 
 	    for(int k=0; k<num_streams; k++) { 
-                MP_CHECK(mp_wait(&rreq[rreq_idx + j*num_streams + k]));
+	        stream_state_t *curr_stream = (stream_state + k); 
+                MP_CHECK(mp_wait(&curr_stream->rreq[rreq_idx + j]));
 
                 if (kernel_size > 0) {
-                    if (use_calc_size > 0)
-                       gpu_launch_calc_kernel(kernel_size, streams[k]);
-                    else
-                       dummy_kernel <<<1, 1, 0, streams[k]>>> (kernel_size);
+                    //if (use_calc_kernel > 0)
+                    //   gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
+                    //else
+                       poll_kernel <<<1, 1, 0, curr_stream->stream>>> (kernel_size);
                 }
 	    }
 
 	    for(int k=0; k<num_streams; k++) { 
-                CUDA_CHECK(cudaStreamSynchronize(streams[k]));
+                CUDA_CHECK(cudaStreamSynchronize(stream_state[k].stream));
 	    }
         }
     }
@@ -634,12 +749,11 @@ double prepost_latency;
 
 double sr_exchange (MPI_Comm comm, int size, int iter_count, double kernel_size, int use_async, int use_kernel_ops = 0, int use_graphs = 0)
 {
-    int j;
     double latency;
     double time_start, time_stop;
     int batch_count, wait_send_batch = 0, wait_recv_batch = 0;
     struct prof *prof = NULL;
-
+    int j;
 
     prof = (use_async) ? &prof_async : &prof_normal;
  
@@ -649,6 +763,17 @@ double sr_exchange (MPI_Comm comm, int size, int iter_count, double kernel_size,
     }
     batch_count = iter_count/steps_per_batch;
     tracking_event = 0;
+
+    for (int i=0; i<num_streams; i++) { 
+        CUDA_CHECK(cudaMemset(stream_state[i].buf_d, 0, size));
+	if (use_graphs) { 
+	    stream_state_t *curr_stream = (stream_state + i); 
+            CUDA_CHECK(cudaMemset((void *)curr_stream->sindex_d, 
+				    0, sizeof(unsigned int)));
+            CUDA_CHECK(cudaMemset((void *)curr_stream->windex_d, 
+				    0, sizeof(unsigned int)));
+	}
+    }
 
     post_recv (size, 0);
 
@@ -687,39 +812,39 @@ double sr_exchange (MPI_Comm comm, int size, int iter_count, double kernel_size,
     while (wait_send_batch < batch_count) { 
         if (!my_rank && prof_start) PROF(prof, prof_idx++);
 
-	if (use_async) {
-	    wait_recv (wait_recv_batch);
+        if (use_async) {
+            wait_recv (wait_recv_batch);
             wait_recv_batch++;
-	}
+        }
 
         if (!my_rank && prof_start) PROF(prof, prof_idx++); 
 
         wait_send (wait_send_batch);
-	wait_send_batch++;
+        wait_send_batch++;
 
         if (!my_rank && prof_start) PROF(prof, prof_idx++);
 
-	if (j < (batch_count-1)) {
-	    post_recv (size, j+1);
-	}
+        if (j < (batch_count-1)) {
+            post_recv (size, j+1);
+        }
 
         if (!my_rank && prof_start) PROF(prof, prof_idx++);
 
-	if (j < batch_count) { 
+        if (j < batch_count) { 
            if (use_async) { 
                if (use_kernel_ops) {
-	           if (use_graphs) { 
-	   	    post_work_async_graphs (size, j, kernel_size);
-	   	} else { 
-	   	    post_work_async_kernels (size, j, kernel_size);
-	   	}
+                   if (use_graphs) { 
+           	    post_work_async_graphs (size, j, kernel_size);
+           	} else { 
+           	    post_work_async_kernels (size, j, kernel_size);
+           	}
                } else { 
                    post_work_async (size, j, kernel_size);
-	       }
+               }
            } else { 
                post_work_sync (size, j, kernel_size);
-	   }
-	}
+           }
+        }
 
         if (!my_rank && prof_start)  {
             PROF(prof, prof_idx++);
@@ -727,7 +852,7 @@ double sr_exchange (MPI_Comm comm, int size, int iter_count, double kernel_size,
             prof_idx = 0;
         }
 
-	j++;
+        j++;
     }
 
     MPI_Barrier(comm);
@@ -781,10 +906,10 @@ int main (int argc, char *argv[])
         calc_size = atoi(value);
     }
 
-    use_calc_size = 0;
-    value = getenv("USE_CALC_SIZE");
+    use_calc_kernel = 0;
+    value = getenv("USE_CALC_KERNEL");
     if (value != NULL) {
-        use_calc_size = atoi(value);
+        use_calc_kernel = atoi(value);
     }
 
     value = getenv("STEPS_PER_BATCH");
@@ -805,36 +930,6 @@ int main (int argc, char *argv[])
     value = getenv("NUM_STREAMS");
     if (value != NULL && atoi(value)) {
         num_streams = atoi(value);
-    }
-
-    value = getenv("MP_ENABLE_UD");
-    if (value != NULL) {
-        enable_ud = atoi(value);
-    }
-
-    if (enable_ud) {
-	if (max_size > 4096) { 
-	    max_size = 4096;
-        }
-    }
-
-    while(1) {
-        int c;
-        c = getopt(argc, argv, "d:h");
-        if (c == -1)
-            break;
-
-        switch(c) {
-        case 'd':
-            gpu_id = strtol(optarg, NULL, 0);
-            break;
-	case 'h':
-            printf("syntax: %s [-d <gpu_id]\n", argv[0]);
-	    break;
-        default:
-            printf("ERROR: invalid option\n");
-            exit(EXIT_FAILURE);
-        }
     }
 
     char tags[] = "wait_recv|wait_send|post_recv|post_work";
@@ -862,18 +957,6 @@ int main (int argc, char *argv[])
         local_rank = 0;
     }
 
-    if (gpu_id >= 0) {
-        dev_id = gpu_id;
-    } else if (getenv("USE_GPU")) {
-        dev_id = atoi(getenv("USE_GPU"));
-    } else {
-        dev_id = local_rank%dev_count;
-    }
-    if (dev_id >= dev_count) {
-        fprintf(stderr, "invalid dev_id=%d\n", dev_id);
-        exit(-1);
-    }
-
     fprintf(stdout, "[%d] local_rank: %d dev_count: %d using GPU device: %d\n", my_rank, local_rank, dev_count, dev_id);
 
     CUDA_CHECK(cudaSetDevice(dev_id));
@@ -889,7 +972,7 @@ int main (int argc, char *argv[])
     fprintf(stdout, "[%d] GPU %d: %s PCIe %d:%d:%d\n", my_rank, dev_id, prop.name, prop.pciDomainID, prop.pciBusID, prop.pciDeviceID);
 
     peer = !my_rank;
-    MP_CHECK(mp_init (MPI_COMM_WORLD, &peer, 1, MP_INIT_DEFAULT, dev_id));
+    MP_CHECK(mp_init_multistream (MPI_COMM_WORLD, &peer, 1, MP_INIT_DEFAULT, dev_id, num_streams));
 
     iter_count = user_iter_count ? user_iter_count : ITER_COUNT_SMALL;
     if (!my_rank) { 
@@ -898,32 +981,42 @@ int main (int argc, char *argv[])
         fprintf(stdout, "NOTE: printing half round-trip latency!!!\n");
     }
 
-    /*allocating requests*/
-    sreq = (mp_request_t *) malloc(steps_per_batch*batches_inflight*num_streams*sizeof(mp_request_t));
-    rreq = (mp_request_t *) malloc(steps_per_batch*(batches_inflight + 1)*num_streams*sizeof(mp_request_t));
-    CUDA_CHECK(cudaHostAlloc((void **)&sdesc, sizeof(mp::mlx5::send_desc_t)*steps_per_batch*batches_inflight*num_streams, 0));
-    CUDA_CHECK(cudaHostAlloc((void **)&wdesc, sizeof(mp::mlx5::wait_desc_t)*steps_per_batch*(batches_inflight + 1)*num_streams, 0));
-    memset((void *)sdesc, 0, sizeof(mp::mlx5::send_desc_t)*steps_per_batch*batches_inflight*num_streams);
-    memset((void *)wdesc, 0, sizeof(mp::mlx5::wait_desc_t)*steps_per_batch*(batches_inflight + 1)*num_streams);
-    CUDA_CHECK(cudaHostGetDevicePointer((void **)&sdesc_d, sdesc, 0));
-    CUDA_CHECK(cudaHostGetDevicePointer((void **)&wdesc_d, wdesc, 0));
+    stream_state = (stream_state_t *)malloc(sizeof(stream_state_t)*num_streams);
+    NULL_CHECK(stream_state);
 
-    streams = (cudaStream_t *)malloc(sizeof(cudaStream_t)*num_streams);
+    /*allocating requests*/
     for (int i=0; i<num_streams; i++) { 
-        CUDA_CHECK(cudaStreamCreateWithFlags(&streams[i], 0));
+	stream_state_t *curr = (stream_state + i); 
+	int inflight_send_ops = steps_per_batch*batches_inflight;
+	int inflight_recv_ops = steps_per_batch*(batches_inflight+1);
+	curr->sreq = (mp_request_t *) malloc(inflight_send_ops*sizeof(mp_request_t));
+        NULL_CHECK(curr->sreq);
+        curr->rreq = (mp_request_t *) malloc(inflight_recv_ops*sizeof(mp_request_t));
+        NULL_CHECK(curr->rreq);
+        CUDA_CHECK(cudaHostAlloc((void **)&curr->sdesc, inflight_send_ops*sizeof(mp::mlx5::send_desc_t), 0));
+        CUDA_CHECK(cudaHostAlloc((void **)&curr->wdesc, inflight_recv_ops*sizeof(mp::mlx5::wait_desc_t), 0));
+        memset((void *)curr->sdesc, 0, inflight_send_ops*sizeof(mp::mlx5::send_desc_t));
+        memset((void *)curr->wdesc, 0, inflight_recv_ops*sizeof(mp::mlx5::wait_desc_t));
+        CUDA_CHECK(cudaHostGetDevicePointer((void **)&curr->sdesc_d, curr->sdesc, 0));
+        CUDA_CHECK(cudaHostGetDevicePointer((void **)&curr->wdesc_d, curr->wdesc, 0));
     }
-    CUDA_CHECK(cudaStreamCreateWithFlags(&main_stream, 0));
+    for (int i=0; i<num_streams; i++) {
+        CUDA_CHECK(cudaStreamCreateWithFlags(&stream_state[i].stream, cudaStreamNonBlocking));
+    }
+    CUDA_CHECK(cudaStreamCreateWithFlags(&main_stream, cudaStreamNonBlocking));
     CUDA_CHECK(cudaEventCreateWithFlags(&start_event, 0));
     CUDA_CHECK(cudaEventCreateWithFlags(&stop_event, 0));
 
     if (!my_rank) {
 	fprintf(stdout, "%10s \t", "Size");
-	if (use_calc_size) { 
+	if (use_calc_kernel) { 
 		fprintf(stdout, "%10s \t ", "CompSize");
 	} else {
 		fprintf(stdout, "%10s \t ", "CompTime");
 	}
-	fprintf(stdout, "%10s \t %10s \t  %10s \t %10s \t %10s \t %10s \t %10s \t %10s  \n", "CPU", "CPU+Comp", "MP", "MP+Comp", "MP-SM", "MP-SM+Comp", "MP-Graph", "MP-Graph+Comp");
+	fprintf(stdout, "%10s \t %10s \t  %10s \t %10s \t %10s \t %10s \t %10s \t %10s  \n", 
+			   "CPU", "CPU+Comp", "MP", "MP+Comp", "MP-SM", 
+			   "MP-SM+Comp", "MP-Graph", "MP-Graph+Comp");
     }
 
     if (size != 1) size = max_size = size;
@@ -937,25 +1030,19 @@ int main (int argc, char *argv[])
 
 	buf_size = size;
 
-        buf = malloc (buf_size);
-        memset(buf, 0, buf_size); 
+        for (int i=0; i<num_streams; i++) { 
+  	    CUDA_CHECK(cudaMalloc((void **)&stream_state[i].buf_d, buf_size));
+            CUDA_CHECK(cudaMemset(stream_state[i].buf_d, 0, buf_size)); 
+            MP_CHECK(mp_register(stream_state[i].buf_d, buf_size, &stream_state[i].reg));
+	}
 
-        CUDA_CHECK(cudaMalloc((void **)&sbuf_d, buf_size));
-        CUDA_CHECK(cudaMemset(sbuf_d, 0, buf_size)); 
+	/*create graph*/
+	create_async_graph (size, kernel_size);
 
-        CUDA_CHECK(cudaMalloc((void **)&rbuf_d, buf_size));
-        CUDA_CHECK(cudaMemset(rbuf_d, 0, buf_size)); 
- 
-        MP_CHECK(mp_register(sbuf_d, buf_size, &sreg));
-        MP_CHECK(mp_register(rbuf_d, buf_size, &rreg));
+	/*warmup*/
+	sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 0/*use_async*/);
 
-	/*create graphs*/
-        create_async_graph (size, kernel_size);
-
-        /*warmup*/
-        sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 0/*use_async*/);
-
-        MPI_Barrier(MPI_COMM_WORLD);
+	MPI_Barrier(MPI_COMM_WORLD);
 
 	sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 1/*use_async*/);
 
@@ -966,7 +1053,6 @@ int main (int argc, char *argv[])
         MPI_Barrier(MPI_COMM_WORLD);
 
 	sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 1/*use_async*/, 1/*use_kernel_ops*/, 1/*use_graphs*/);
-
         MPI_Barrier(MPI_COMM_WORLD);
 
 	/*calculate kenrel time based on latency*/
@@ -974,7 +1060,7 @@ int main (int argc, char *argv[])
 
         MPI_Barrier(MPI_COMM_WORLD);
 
-	if (use_calc_size) 
+	if (use_calc_kernel) 
 	    kernel_size = calc_size; 
         else  
   	    kernel_size = (comm_comp_ratio > 0) ? comm_comp_ratio*(latency) : kernel_size;
@@ -996,7 +1082,7 @@ int main (int argc, char *argv[])
 
         MPI_Barrier(MPI_COMM_WORLD);
 
-        if (!my_rank) fprintf(stdout, "\t   %8.2lf ", latency);
+	if (!my_rank) fprintf(stdout, "\t   %8.2lf ", latency);
         //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf)", latency, prepost_latency);
 
 	/*Normal + Kernel*/
@@ -1053,7 +1139,6 @@ int main (int argc, char *argv[])
         MPI_Barrier(MPI_COMM_WORLD);
 
 	if (!my_rank) fprintf(stdout, "\t   %8.2lf  ", latency);
-        //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf) \n", latency, prepost_latency);
 
 	if (!my_rank) fprintf(stdout, " \n");
 
@@ -1070,21 +1155,19 @@ int main (int argc, char *argv[])
 	/*destroy graphs*/
         destroy_async_graph();
 
-        mp_deregister(&sreg);
-        mp_deregister(&rreg);
-
-        CUDA_CHECK(cudaFree(sbuf_d));
-        CUDA_CHECK(cudaFree(rbuf_d));
-        free(buf);
+        for (int i=0; i<num_streams; i++) {
+            mp_deregister(&stream_state[i].reg);
+            CUDA_CHECK(cudaFree(stream_state[i].buf_d));
+        }
     }
 
     for (int i=0; i<num_streams; i++) { 
-        CUDA_CHECK(cudaStreamDestroy(streams[i]));
+        CUDA_CHECK(cudaStreamDestroy(stream_state[i].stream));
+        free(stream_state[i].sreq);
+        free(stream_state[i].rreq);
     }
     CUDA_CHECK(cudaStreamDestroy(main_stream));
-    free(streams);
-    free(sreq);
-    free(rreq);
+    free(stream_state);
 
     mp_finalize ();
 
@@ -1094,3 +1177,4 @@ int main (int argc, char *argv[])
 
     return 0;
 }
+

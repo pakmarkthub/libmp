@@ -88,9 +88,9 @@ struct ibv_device *ib_dev = NULL;
 int ib_port = 1;
 ib_context_t *ib_ctx = NULL;
 int smp_depth = 256;
-int ib_tx_depth = 256*2;
-int ib_rx_depth = 256*2;
-int num_cqes = 256; // it gets actually rounded up to 512
+int ib_tx_depth = 256*8;
+int ib_rx_depth = 256*8;
+int num_cqes = 256*8; // it gets actually rounded up to 512
 int ib_max_sge = 30;
 int ib_inline_size = 64;
 struct ibv_port_attr ib_port_attr;
@@ -824,6 +824,403 @@ void *shm_mapptr;
 char ud_padding[UD_ADDITION];
 mp_reg_t ud_padding_reg;
 
+int get_env(int init_flags)
+{
+  char *value = NULL;
+  int ret = MP_SUCCESS;
+
+  value = getenv("MP_ENABLE_UD"); 
+  if (value != NULL) {
+    mp_enable_ud = atoi(value);
+  }
+
+  value = getenv("MP_CQ_POLL_COUNT"); 
+  if (value != NULL) {
+    cq_poll_count = atoi(value);
+  }
+
+  value = getenv("MP_IB_CQ_DEPTH");
+  if (value != NULL) {
+    num_cqes = atoi(value);
+    mp_dbg_msg("setting num_cqes=%d\n", num_cqes);
+  }
+
+  value = getenv ("MP_IB_MAX_SGL"); 
+  if (value != NULL) { 
+    ib_max_sge = atoi(value);
+  }
+
+  value = getenv ("MP_ENABLE_IPC"); 
+  if (value != NULL) { 
+    mp_enable_ipc = atoi(value);
+  }
+
+  value = getenv("MP_EVENT_ASYNC");
+  if (value != NULL) {
+    use_event_sync = atoi(value);
+  }
+  if (use_event_sync) mp_warn_msg("EVENT_ASYNC enabled\n");
+
+  if (init_flags & MP_INIT_RX_CQ_ON_GPU)
+      use_rx_cq_gpu = 1;
+  value = getenv("MP_RX_CQ_ON_GPU");
+  if (value != NULL) {
+    use_rx_cq_gpu = atoi(value);
+  }
+  if (use_rx_cq_gpu) mp_warn_msg("RX CQ on GPU memory enabled\n");
+
+  if (init_flags & MP_INIT_TX_CQ_ON_GPU)
+      use_tx_cq_gpu = 1;
+  value = getenv("MP_TX_CQ_ON_GPU");
+  if (value != NULL) {
+    use_tx_cq_gpu = atoi(value);
+  }
+  if (use_tx_cq_gpu) mp_warn_msg("TX CQ on GPU memory enabled\n");
+
+  if (init_flags & MP_INIT_DBREC_ON_GPU)
+      use_dbrec_gpu = 1;
+  value = getenv("MP_DBREC_ON_GPU");
+  if (value != NULL) {
+      use_dbrec_gpu = atoi(value);
+  }
+  if (use_dbrec_gpu) mp_warn_msg("WQ DBREC on GPU memory enabled\n");
+
+  mp_dbg_msg("libgdsync build version 0x%08x, major=%d minor=%d\n", GDS_API_VERSION, GDS_API_MAJOR_VERSION, GDS_API_MINOR_VERSION);
+
+  int version;
+  ret = gds_query_param(GDS_PARAM_VERSION, &version);
+  if (ret) {
+      mp_err_msg("error querying libgdsync version\n");
+      return MP_FAILURE;
+  }
+  mp_dbg_msg("libgdsync queried version 0x%08x\n", version);
+  if (!GDS_API_VERSION_COMPATIBLE(version)) {
+      mp_err_msg("incompatible libgdsync version 0x%08x\n", version);
+      return MP_FAILURE;
+  }
+
+  return 0;
+}
+
+int select_init_device()
+{
+  const char *select_dev;
+  struct ibv_device **dev_list = NULL;
+  int num_devices;
+  char *req_dev = NULL;
+  char *value = NULL;
+  int i;
+  struct ibv_device_attr dev_attr;
+
+  /*pick the right device*/
+  dev_list = ibv_get_device_list (&num_devices);
+  if (dev_list == NULL) {
+    mp_err_msg("ibv_get_device_list returned NULL \n");
+    return MP_FAILURE;
+  }
+
+  value = getenv("MP_USE_IB_HCA"); 
+  if (value != NULL) {
+    req_dev = value;
+  } else {
+    // old env var, for compatibility
+    value = getenv("USE_IB_HCA"); 
+    if (value != NULL) {
+      mp_warn_msg("USE_IB_HCA is deprecated\n");
+      req_dev = getenv(value);
+    }
+  }
+
+  ib_dev = dev_list[0];
+  if (req_dev != NULL) {
+    for (i=0; i<num_devices; i++) {
+      select_dev = ibv_get_device_name(dev_list[i]);
+      if (strstr(select_dev, req_dev) != NULL) {
+        ib_dev = dev_list[i];
+        mp_info_msg("using IB device: %s \n", req_dev);
+        break;
+      }
+    }
+    if (i == num_devices) {
+      select_dev = ibv_get_device_name(dev_list[0]);
+      ib_dev = dev_list[0];
+      mp_err_msg("request device: %s not found, defaulting to %s \n", req_dev, select_dev);
+    }
+  }
+  mp_info_msg("HCA dev: %s\n", ibv_get_device_name(ib_dev));
+
+  /*create context, pd, cq*/
+  ib_ctx = malloc (sizeof (ib_context_t));
+  if (ib_ctx == NULL) {
+    mp_err_msg("ib_ctx allocation failed \n");
+    return MP_FAILURE;
+  }
+
+  ib_ctx->context = ibv_open_device(ib_dev);
+  if (ib_ctx->context == NULL) {
+    mp_err_msg("ibv_open_device failed \n");
+    return MP_FAILURE;
+  }
+
+  /*get device attributes and check relevant leimits*/
+  if (ibv_query_device(ib_ctx->context, &dev_attr)) {
+    mp_err_msg("query_device failed \n"); 	 
+    return MP_FAILURE;	
+  }
+
+  if (ib_max_sge > dev_attr.max_sge) {
+      mp_err_msg("warning!! requested sgl length longer than supported by the adapter, reverting to max, requested: %d max: %d \n", ib_max_sge, dev_attr.max_sge);
+      ib_max_sge = dev_attr.max_sge;
+  }
+
+  ib_ctx->pd = ibv_alloc_pd (ib_ctx->context);
+  if (ib_ctx->pd == NULL) {
+    fprintf(stderr ,"ibv_alloc_pd failed \n");
+    return MP_FAILURE;
+  }
+
+  ibv_query_port (ib_ctx->context, ib_port, &ib_port_attr);
+
+  return 0;
+}
+
+int mp_init_multistream(MPI_Comm comm, int *peers, int count, int flags, 
+		int gpu_id, int streams_per_rank)
+{
+  int i;
+
+  struct ibv_qp_attr ib_qp_attr;
+  struct ibv_ah_attr ib_ah_attr;
+  int peer;
+  int gds_flags, comm_size, comm_rank;
+  qpinfo_t *qpinfo_all;
+  int ret = MP_SUCCESS;
+
+  MPI_Comm_size (comm, &comm_size);
+  MPI_Comm_rank (comm, &comm_rank);
+
+  mpi_comm = comm;
+  mpi_comm_size = comm_size;
+  mpi_comm_rank = comm_rank;
+
+  if(gpu_id < 0)
+  {
+    mp_err_msg("Invalid input GPU ID (%d)\n", gpu_id);
+    return MP_FAILURE;    
+  }
+
+  ret = get_env(flags);
+  if (ret != MP_SUCCESS) { 
+      mp_err_msg("warning!! get_env failed \n");
+      return ret; 
+  }
+
+  ret = select_init_device();
+  if (ret != MP_SUCCESS) { 
+      mp_err_msg("warning!! get_env failed \n");
+      return ret; 
+  }
+
+  client_count = count*streams_per_rank;
+
+  /*allocate requests*/
+  allocate_requests();
+  assert(mp_request_free_list != NULL);
+
+  /*establish connections*/
+  client_index = malloc(sizeof(int)*comm_size*streams_per_rank);
+  if (client_index == NULL) {
+    mp_err_msg("allocation failed \n");
+    return MP_FAILURE;
+  }
+  memset(client_index, bad_index, sizeof(int)*comm_size*streams_per_rank);
+
+  clients = malloc(sizeof(client_t)*client_count);
+  if (clients == NULL) {
+    mp_err_msg("allocation failed \n");
+    return MP_FAILURE;
+  }
+  memset(clients, 0, sizeof(client_t)*client_count);
+
+  qpinfo_all = malloc (sizeof(qpinfo_t)*comm_size*streams_per_rank);
+  if (qpinfo_all == NULL) {
+    mp_err_msg("qpinfo allocation failed \n");
+    return MP_FAILURE;
+  }
+
+  int idx=0, j;
+  /*creating qps for all peers*/
+  for (i=0; i<count; i++) {
+      // MPI rank of i-th peer
+      peer = peers[i];
+
+      for (j=0; j<streams_per_rank; j++) { 
+          /*rank to peer id mapping */
+          client_index[peer*streams_per_rank + j] = idx;
+
+          /*peer id to rank mapping */
+          clients[idx].mpi_rank = peer;
+          clients[idx].stream_idx = j;
+          clients[idx].last_req_id = 0;
+          clients[idx].last_done_id = 0;
+          assert(sizeof(clients[idx].last_waited_stream_req) == N_FLOWS*sizeof(void*));
+
+          memset(clients[idx].last_posted_trigger_id, 0, sizeof(clients[0].last_posted_trigger_id));
+          memset(clients[idx].last_posted_tracked_id, 0, sizeof(clients[0].last_posted_tracked_id));
+          memset(clients[idx].last_tracked_id,        0, sizeof(clients[0].last_tracked_id));
+          memset(clients[idx].last_trigger_id,        0, sizeof(clients[0].last_trigger_id));
+          memset(clients[idx].last_waited_stream_req, 0, sizeof(clients[0].last_waited_stream_req));
+          memset(clients[idx].waited_stream_req,      0, sizeof(clients[0].waited_stream_req));
+          memset(clients[idx].last_posted_stream_req, 0, sizeof(clients[0].last_posted_stream_req));
+          memset(clients[idx].posted_stream_req,      0, sizeof(clients[0].posted_stream_req));
+
+          gds_qp_init_attr_t ib_qp_init_attr;
+          memset(&ib_qp_init_attr, 0, sizeof(ib_qp_init_attr));
+          ib_qp_init_attr.cap.max_send_wr  = ib_tx_depth;
+          ib_qp_init_attr.cap.max_recv_wr  = ib_rx_depth;
+          ib_qp_init_attr.cap.max_send_sge = ib_max_sge;
+          ib_qp_init_attr.cap.max_recv_sge = ib_max_sge;
+
+          //create QP, set to INIT state and exchange QPN information
+          if (mp_enable_ud) {
+              ib_qp_init_attr.qp_type = IBV_QPT_UD;
+              ib_qp_init_attr.cap.max_inline_data = ib_inline_size;
+          } else {
+              ib_qp_init_attr.qp_type = IBV_QPT_RC;
+              ib_qp_init_attr.cap.max_inline_data = ib_inline_size;
+          }
+
+          gds_flags = GDS_CREATE_QP_DEFAULT;
+          if (use_wq_gpu)
+              gds_flags |= GDS_CREATE_QP_WQ_ON_GPU;
+          if (use_rx_cq_gpu)
+              gds_flags |= GDS_CREATE_QP_RX_CQ_ON_GPU;
+          if (use_tx_cq_gpu)
+              gds_flags |= GDS_CREATE_QP_TX_CQ_ON_GPU;
+          if (use_dbrec_gpu)
+              gds_flags |= GDS_CREATE_QP_WQ_DBREC_ON_GPU;
+
+          //is the CUDA context already initialized?
+          clients[idx].qp = gds_create_qp(ib_ctx->pd, ib_ctx->context, &ib_qp_init_attr, gpu_id, gds_flags);
+          if (clients[idx].qp == NULL) {
+              mp_err_msg("qp creation failed \n");
+              return MP_FAILURE;
+          }
+          clients[idx].send_cq = &clients[idx].qp->send_cq;
+          clients[idx].recv_cq = &clients[idx].qp->recv_cq;
+
+          assert(clients[idx].qp);
+          assert(clients[idx].send_cq);
+          assert(clients[idx].recv_cq);
+
+          memset(&ib_qp_attr, 0, sizeof(struct ibv_qp_attr));
+          ib_qp_attr.qp_state        = IBV_QPS_INIT;
+          ib_qp_attr.pkey_index      = 0;
+          ib_qp_attr.port_num        = ib_port;
+          int flags = 0;
+          if (mp_enable_ud) { 
+              ib_qp_attr.qkey            = 0;
+              flags                      = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_QKEY;
+          } else {
+              ib_qp_attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_LOCAL_WRITE;
+              flags                      = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
+          }
+
+          ret = ibv_modify_qp (clients[idx].qp->qp, &ib_qp_attr, flags);
+          if (ret != 0) {
+              mp_err_msg("Failed to modify QP to INIT: %d, %s\n", ret, strerror(errno));
+              exit(EXIT_FAILURE);
+          }
+
+//        mp_query_print_qp(clients[i].qp, NULL, 0);
+
+          qpinfo_all[peer*streams_per_rank + j].lid = ib_port_attr.lid;
+          qpinfo_all[peer*streams_per_rank + j].qpn = clients[idx].qp->qp->qp_num;
+          qpinfo_all[peer*streams_per_rank + j].psn = 0;
+          mp_dbg_msg("QP lid:%04x qpn:%06x psn:%06x\n", 
+                     qpinfo_all[peer*streams_per_rank + j].lid,
+                     qpinfo_all[peer*streams_per_rank + j].qpn,
+                     qpinfo_all[peer*streams_per_rank + j].psn);
+
+	  idx++; 
+      }
+  }
+
+  /*exchange qpinfo*/
+  MPI_CHECK(MPI_Alltoall(MPI_IN_PLACE, sizeof(qpinfo_t)*streams_per_rank,
+                         MPI_CHAR, qpinfo_all, sizeof(qpinfo_t)*streams_per_rank,
+                         MPI_CHAR, comm));
+
+  idx = 0;
+  for (i=0; i<count; i++) {
+      int flags;
+      peer = peers[i];
+
+      for (j=0; j<streams_per_rank; j++) {
+          memset(&ib_qp_attr, 0, sizeof(struct ibv_qp_attr));
+          if (mp_enable_ud) { 
+              ib_qp_attr.qp_state       = IBV_QPS_RTR;
+              flags = IBV_QP_STATE;
+          } else { 
+              ib_qp_attr.qp_state       = IBV_QPS_RTR;
+              ib_qp_attr.path_mtu       = ib_port_attr.active_mtu;
+              ib_qp_attr.dest_qp_num    = qpinfo_all[peer].qpn;
+              ib_qp_attr.rq_psn         = qpinfo_all[peer].psn;
+              ib_qp_attr.ah_attr.dlid   = qpinfo_all[peer].lid;
+              ib_qp_attr.max_dest_rd_atomic     = 1;
+              ib_qp_attr.min_rnr_timer          = 12;
+              ib_qp_attr.ah_attr.is_global      = 0;
+              ib_qp_attr.ah_attr.sl             = 0;
+              ib_qp_attr.ah_attr.src_path_bits  = 0;
+              ib_qp_attr.ah_attr.port_num       = ib_port;
+              flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU
+                  | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN
+                  | IBV_QP_MIN_RNR_TIMER | IBV_QP_MAX_DEST_RD_ATOMIC;
+          }
+
+          ret = ibv_modify_qp(clients[idx].qp->qp, &ib_qp_attr, flags);
+          if (ret != 0) {
+              mp_err_msg("Failed to modify RC QP to RTR\n");
+              return MP_FAILURE;
+          }
+
+          memset(&ib_qp_attr, 0, sizeof(struct ibv_qp_attr));
+          if (mp_enable_ud) { 
+              ib_qp_attr.qp_state       = IBV_QPS_RTS;
+              ib_qp_attr.sq_psn         = 0;
+              flags = IBV_QP_STATE | IBV_QP_SQ_PSN; 
+          } else { 
+              ib_qp_attr.qp_state       = IBV_QPS_RTS;
+              ib_qp_attr.sq_psn         = 0;
+              ib_qp_attr.timeout        = 20;
+              ib_qp_attr.retry_cnt      = 7;
+              ib_qp_attr.rnr_retry      = 7;
+              ib_qp_attr.max_rd_atomic  = 1;
+              flags = IBV_QP_STATE | IBV_QP_SQ_PSN | IBV_QP_TIMEOUT
+                | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY
+                | IBV_QP_MAX_QP_RD_ATOMIC;
+          }
+
+          ret = ibv_modify_qp(clients[idx].qp->qp, &ib_qp_attr, flags);
+          if (ret != 0)
+          {
+            mp_err_msg("Failed to modify RC QP to RTS\n");
+            return MP_FAILURE;
+          }
+
+	  idx++;
+      }
+  }
+
+  MPI_Barrier(comm);
+
+  assert(mp_enable_ipc == 0);
+
+  free(qpinfo_all);
+
+  return MP_SUCCESS;
+}
+
 /*initialized end point and establishes alltoall connections*/
 int mp_init (MPI_Comm comm, int *peers, int count, int init_flags, int gpu_id)
 {
@@ -1034,6 +1431,7 @@ int mp_init (MPI_Comm comm, int *peers, int count, int init_flags, int gpu_id)
       client_index[peer] = i;
       /*peer id to rank mapping */
       clients[i].mpi_rank = peer;
+      clients[i].stream_idx = 0;
       clients[i].last_req_id = 0;
       clients[i].last_done_id = 0;
       assert(sizeof(clients[i].last_waited_stream_req) == N_FLOWS*sizeof(void*));

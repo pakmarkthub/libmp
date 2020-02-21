@@ -83,6 +83,7 @@ enum mp_init_flags {
  * \return MP_SUCCESS, MP_FAILURE
  */
 int mp_init(MPI_Comm comm, int *peers, int count, int flags, int gpu_id);
+int mp_init_multistream(MPI_Comm comm, int *peers, int count, int flags, int gpu_id, int streams_per_rank);
 void mp_finalize();
 
 int mp_register(void *addr, size_t length, mp_reg_t *reg_t);
