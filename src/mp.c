@@ -1061,6 +1061,7 @@ int mp_init_multistream(MPI_Comm comm, int *peers, int count, int flags,
           /*peer id to rank mapping */
           clients[idx].mpi_rank = peer;
           clients[idx].stream_idx = j;
+          clients[idx].num_streams =  streams_per_rank;
           clients[idx].last_req_id = 0;
           clients[idx].last_done_id = 0;
           assert(sizeof(clients[idx].last_waited_stream_req) == N_FLOWS*sizeof(void*));
@@ -1164,9 +1165,9 @@ int mp_init_multistream(MPI_Comm comm, int *peers, int count, int flags,
           } else { 
               ib_qp_attr.qp_state       = IBV_QPS_RTR;
               ib_qp_attr.path_mtu       = ib_port_attr.active_mtu;
-              ib_qp_attr.dest_qp_num    = qpinfo_all[peer].qpn;
-              ib_qp_attr.rq_psn         = qpinfo_all[peer].psn;
-              ib_qp_attr.ah_attr.dlid   = qpinfo_all[peer].lid;
+              ib_qp_attr.dest_qp_num    = qpinfo_all[peer*streams_per_rank + j].qpn;
+              ib_qp_attr.rq_psn         = qpinfo_all[peer*streams_per_rank + j].psn;
+              ib_qp_attr.ah_attr.dlid   = qpinfo_all[peer*streams_per_rank + j].lid;
               ib_qp_attr.max_dest_rd_atomic     = 1;
               ib_qp_attr.min_rnr_timer          = 12;
               ib_qp_attr.ah_attr.is_global      = 0;
@@ -1432,6 +1433,7 @@ int mp_init (MPI_Comm comm, int *peers, int count, int init_flags, int gpu_id)
       /*peer id to rank mapping */
       clients[i].mpi_rank = peer;
       clients[i].stream_idx = 0;
+      clients[i].num_streams = 1;
       clients[i].last_req_id = 0;
       clients[i].last_done_id = 0;
       assert(sizeof(clients[i].last_waited_stream_req) == N_FLOWS*sizeof(void*));
@@ -2167,7 +2169,7 @@ struct mp_request *new_stream_request(client_t *client, mp_req_type_t type, mp_s
   struct mp_request *req = get_request();
   //mp_dbg_msg("new req=%p\n", req);
   if (req) {
-      req->peer = client->mpi_rank;
+      req->peer = client->mpi_rank*client->num_streams + client->stream_idx;
       req->flags = 0;
       req->sgv = NULL;
       req->next = NULL;

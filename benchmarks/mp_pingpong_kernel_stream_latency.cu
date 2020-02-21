@@ -558,65 +558,45 @@ void post_work_async_kernels (int size, int batch_index, double kernel_size)
 	for(int k=0; k<num_streams; k++) {
 	    stream_state_t *curr_stream = (stream_state + k); 
       	    CUDA_CHECK(cudaStreamWaitEvent(curr_stream->stream, start_event, 0));	
-	}
 
-	if (!my_rank) {
-	    for(int k=0; k<num_streams; k++) {
-	        stream_state_t *curr_stream = (stream_state + k); 
+	    if (!my_rank) {
                 MP_CHECK(mp::mlx5::get_descriptors(&curr_stream->wdesc[r_idx], &curr_stream->rreq[r_idx]));
 	        wait_op_kernel<<<1,1,0,curr_stream->stream>>>(curr_stream->wdesc[r_idx]);
                 CUDA_CHECK(cudaGetLastError());
-	    }
-
-	    for(int k=0; k<num_streams; k++) {
-	        stream_state_t *curr_stream = (stream_state + k); 
+	        
                 if (kernel_size > 0) {
                     if (use_calc_kernel > 0)
                        gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
                     else
                        poll_kernel <<<1, 1, 0, curr_stream->stream>>> (kernel_size);
                 }
-	    }
 
-	    for(int k=0; k<num_streams; k++) {
-	        stream_state_t *curr_stream = (stream_state + k); 
                 MP_CHECK(mp_send_prepare((void *)stream_state[k].buf_d, size, peer*num_streams + k, 
 	        			&curr_stream->reg, &curr_stream->sreq[s_idx]));
                 MP_CHECK(mp::mlx5::get_descriptors(&curr_stream->sdesc[s_idx], &curr_stream->sreq[s_idx]));
 	        send_op_kernel<<<1,1,0,curr_stream->stream>>>(curr_stream->sdesc[s_idx]);
                 CUDA_CHECK(cudaGetLastError());
-	   }
- 	} else {
-	    for(int k=0; k<num_streams; k++) {
-	        stream_state_t *curr_stream = (stream_state + k); 
+ 	    } else {
                 MP_CHECK(mp_send_prepare((void *)stream_state[k].buf_d, size, peer*num_streams + k, 
 	         		       &curr_stream->reg, &curr_stream->sreq[s_idx]));
                 MP_CHECK(mp::mlx5::get_descriptors(&curr_stream->sdesc[s_idx], &curr_stream->sreq[s_idx]));
 	        send_op_kernel<<<1,1,0,curr_stream->stream>>>(curr_stream->sdesc[s_idx]);
                 CUDA_CHECK(cudaGetLastError());
-	   }
 
-	   for(int k=0; k<num_streams; k++) {
-	        stream_state_t *curr_stream = (stream_state + k); 
 	        MP_CHECK(mp::mlx5::get_descriptors(&curr_stream->wdesc[r_idx], &curr_stream->rreq[r_idx]));
 	        wait_op_kernel<<<1,1,0,curr_stream->stream>>>(curr_stream->wdesc[r_idx]);
                 CUDA_CHECK(cudaGetLastError());
-	   }
 
-	   for(int k=0; k<num_streams; k++) {
-	        stream_state_t *curr_stream = (stream_state + k); 
                 if (kernel_size > 0) {
                     if (use_calc_kernel > 0)
                        gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
                     else
                        poll_kernel <<<1, 1, 0, curr_stream->stream>>> (kernel_size);
                 }
-	   }
- 	}
-	for(int k=0; k<num_streams; k++) {
-	     stream_state_t *curr_stream = (stream_state + k); 
-	     CUDA_CHECK(cudaEventRecord(stop_event, curr_stream->stream));
-	     CUDA_CHECK(cudaStreamWaitEvent(main_stream, stop_event, 0));
+ 	    }
+
+	    CUDA_CHECK(cudaEventRecord(stop_event, curr_stream->stream));
+	    CUDA_CHECK(cudaStreamWaitEvent(main_stream, stop_event, 0));
 	}
     }
 }
@@ -634,46 +614,27 @@ void post_work_async (int size, int batch_index, double kernel_size)
 	for(int k=0; k<num_streams; k++) {
 	    stream_state_t *curr_stream = (stream_state + k); 
   	    CUDA_CHECK(cudaStreamWaitEvent(curr_stream->stream, start_event, 0));
-	}
 
-	if (!my_rank) { 
-	    for(int k=0; k<num_streams; k++) {
-	        stream_state_t *curr_stream = (stream_state + k); 
+	    if (!my_rank) { 
    	        MP_CHECK(mp_wait_on_stream(&curr_stream->rreq[r_idx], curr_stream->stream));
-	    }
 
-	    for(int k=0; k<num_streams; k++) {
-	        stream_state_t *curr_stream = (stream_state + k); 
- 
                 if (kernel_size > 0) {
                     if (use_calc_kernel > 0)
                        gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
                     else
                        poll_kernel <<<1, 1, 0, curr_stream->stream>>> (kernel_size);
                 }
-	    }
 
-	    for(int k=0; k<num_streams; k++) {
-	        stream_state_t *curr_stream = (stream_state + k); 
                 MP_CHECK(mp_isend_on_stream ((void *)curr_stream->buf_d, size, peer*num_streams + k, 
 	        			&curr_stream->reg, &curr_stream->sreq[s_idx], 
 	        			curr_stream->stream));
-	    }
-   	} else {
-	    for(int k=0; k<num_streams; k++) {
-	        stream_state_t *curr_stream = (stream_state + k); 
+   	    } else {
                 MP_CHECK(mp_isend_on_stream ((void *)curr_stream->buf_d, size, peer*num_streams + k, 
 	        			&curr_stream->reg, &curr_stream->sreq[s_idx], 
 	        			curr_stream->stream));
-	    }
 
-	    for(int k=0; k<num_streams; k++) {
-	        stream_state_t *curr_stream = (stream_state + k); 
                 MP_CHECK(mp_wait_on_stream(&curr_stream->rreq[r_idx], curr_stream->stream));
-	    }
 
-	    for(int k=0; k<num_streams; k++) {
-	        stream_state_t *curr_stream = (stream_state + k); 
                 if (kernel_size > 0) {
                     if (use_calc_kernel > 0)
                        gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
@@ -681,10 +642,7 @@ void post_work_async (int size, int batch_index, double kernel_size)
                        poll_kernel <<<1, 1, 0, curr_stream->stream>>> (kernel_size);
                 }
 	    }
-	}
 
-	for(int k=0; k<num_streams; k++) {
-	    stream_state_t *curr_stream = (stream_state + k); 
 	    CUDA_CHECK(cudaEventRecord(stop_event, curr_stream->stream));
 	    CUDA_CHECK(cudaStreamWaitEvent(main_stream, stop_event, 0));
 	}
@@ -704,9 +662,9 @@ void post_work_sync (int size, int batch_index, double kernel_size)
 		MP_CHECK(mp_wait(&curr_stream->rreq[rreq_idx + j]));
 
                 if (kernel_size > 0) {
-                    //if (use_calc_kernel > 0)
-                    //   gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
-                    //else
+                    if (use_calc_kernel > 0)
+                       gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
+                    else
                        poll_kernel <<<1, 1, 0, curr_stream->stream>>> (kernel_size);
                 }
 	    }
@@ -731,9 +689,9 @@ void post_work_sync (int size, int batch_index, double kernel_size)
                 MP_CHECK(mp_wait(&curr_stream->rreq[rreq_idx + j]));
 
                 if (kernel_size > 0) {
-                    //if (use_calc_kernel > 0)
-                    //   gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
-                    //else
+                    if (use_calc_kernel > 0)
+                       gpu_launch_calc_kernel(kernel_size, curr_stream->stream);
+                    else
                        poll_kernel <<<1, 1, 0, curr_stream->stream>>> (kernel_size);
                 }
 	    }

@@ -115,6 +115,7 @@ typedef struct {
    //int region_size;
    int mpi_rank;
    int stream_idx;
+   int num_streams;
    uint32_t last_req_id;
    uint32_t last_done_id;
    uint32_t last_posted_trigger_id[N_FLOWS];
