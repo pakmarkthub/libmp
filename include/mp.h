@@ -101,6 +101,7 @@ int mp_deregister(mp_reg_t *reg);
 int mp_irecv (void *buf, int size, int peer, mp_reg_t *mp_reg, mp_request_t *req);
 int mp_isend (void *buf, int size, int peer, mp_reg_t *mp_reg, mp_request_t *req);
 
+int mp_test(mp_request_t *req);
 int mp_wait (mp_request_t *req);
 int mp_wait_all (uint32_t count, mp_request_t *req);
 int mp_progress_all (uint32_t count, mp_request_t *req);

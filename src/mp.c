@@ -531,12 +531,12 @@ int mp_test(mp_request_t *req)
 {
   int ret = 0;
 
-  ret = mp_test(req);
+  ret = mp_test_one(req);
 
   return ret;
 }
 
-int mp_test (mp_request_t *req_)
+int mp_test_one (mp_request_t *req_)
 {
     int ret = 0;
     
@@ -579,34 +579,26 @@ int mp_test (mp_request_t *req_)
         }
     }
 
-    while (req->status != MP_COMPLETE) {
-        ret = mp_progress_single_flow (TX_FLOW);
-        if (ret) {
+    ret = mp_progress_single_flow (TX_FLOW);
+    if (ret) {
+        goto out;
+    }
+    ret = mp_progress_single_flow (RX_FLOW);
+    if (ret) {
+        goto out;
+    }
+
+    us_t now = mp_get_cycles();
+    if (((long)now-(long)start) > (long)tmout) {
+        start = now;
+        mp_warn_msg("checking for GPU errors\n");
+        int retcode = mp_check_gpu_error();
+        if (retcode) {
+            ret = MP_FAILURE;
             goto out;
         }
-        ret = mp_progress_single_flow (RX_FLOW);
-        if (ret) {
-            goto out;
-        }
-
-        us_t now = mp_get_cycles();
-        if (((long)now-(long)start) > (long)tmout) {
-            start = now;
-            mp_warn_msg("checking for GPU errors\n");
-            int retcode = mp_check_gpu_error();
-            if (retcode) {
-                ret = MP_FAILURE;
-                goto out;
-            }
-            mp_warn_msg("enabling dbg tracing\n");
-            mp_enable_dbg(1);
-
-            mp_dbg_msg("complete=%d req:%p status:%d id=%d peer=%d type=%d\n", complete, req, req->status, req->id, req->peer, req->type);
-
-            // TODO: remove this
-            //mp_warn_msg("stopping CUDA profiler\n");
-            //cuProfilerStop();
-        }
+        mp_warn_msg("enabling dbg tracing\n");
+        mp_enable_dbg(1);
     }
         
     if (!ret && (req->status == MP_COMPLETE))
