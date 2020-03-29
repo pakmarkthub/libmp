@@ -527,6 +527,96 @@ out:
     return ret;
 }
 
+int mp_test(mp_request_t *req)
+{
+  int ret = 0;
+
+  ret = mp_test(req);
+
+  return ret;
+}
+
+int mp_test (mp_request_t *req_)
+{
+    int ret = 0;
+    
+    us_t start = mp_get_cycles();
+    us_t tmout = MP_PROGRESS_ERROR_CHECK_TMOUT_US;
+    
+    /*poll until completion*/
+    struct mp_request *req = *req_;
+    
+    // user did not call post_wait_cq()
+    // if req->status == WAIT_PENDING && it is a stream request
+    //   manually ack the cqe info (NEW EXP verbs API)
+    //   req->status = MP_WAIT_POSTED
+
+    // BUG: Is this used only in IPC transfers;
+    if (mp_enable_ipc) { 
+        if (req->status == MP_PENDING_NOWAIT) 
+            req->status = MP_PENDING;
+    }
+    else
+    {
+        if (!req_can_be_waited(req))
+        {
+            mp_dbg_msg("cannot wait req:%p status:%d id=%d peer=%d type=%d flags=%08x\n", req, req->status, req->id, req->peer, req->type, req->flags);
+            ret = EINVAL;
+            goto out;
+        }
+        if (req->status == MP_PENDING_NOWAIT) {
+            mp_dbg_msg("PENDING_NOWAIT->PENDING req:%p status:%d id=%d peer=%d type=%d\n", req, req->status, req->id, req->peer, req->type);
+            client_t *client = &clients[client_index[req->peer]];
+            mp_flow_t req_flow = mp_type_to_flow(req->type);
+            struct gds_cq *cq = (req_flow == TX_FLOW) ? client->send_cq : client->recv_cq;
+            ret = gds_post_wait_cq(cq, &req->gds_wait_info, 0);
+            if (ret) {
+              mp_err_msg("got %d while posting cq\n", ret);
+              goto out;
+            }
+            req->stream = NULL;
+            req->status = MP_PENDING;
+        }
+    }
+
+    while (req->status != MP_COMPLETE) {
+        ret = mp_progress_single_flow (TX_FLOW);
+        if (ret) {
+            goto out;
+        }
+        ret = mp_progress_single_flow (RX_FLOW);
+        if (ret) {
+            goto out;
+        }
+
+        us_t now = mp_get_cycles();
+        if (((long)now-(long)start) > (long)tmout) {
+            start = now;
+            mp_warn_msg("checking for GPU errors\n");
+            int retcode = mp_check_gpu_error();
+            if (retcode) {
+                ret = MP_FAILURE;
+                goto out;
+            }
+            mp_warn_msg("enabling dbg tracing\n");
+            mp_enable_dbg(1);
+
+            mp_dbg_msg("complete=%d req:%p status:%d id=%d peer=%d type=%d\n", complete, req, req->status, req->id, req->peer, req->type);
+
+            // TODO: remove this
+            //mp_warn_msg("stopping CUDA profiler\n");
+            //cuProfilerStop();
+        }
+    }
+        
+    if (!ret && (req->status == MP_COMPLETE))
+        release_mp_request((struct mp_request *) req);
+
+out:
+    return ret;
+}
+
+
 int mp_wait(mp_request_t *req)
 {
   int ret = 0;
@@ -930,6 +1020,20 @@ int select_init_device()
       req_dev = getenv(value);
     }
   }
+
+  int local_rank = 0;
+  if (getenv("MV2_COMM_WORLD_LOCAL_RANK") != NULL) {
+      local_rank = atoi(getenv("MV2_COMM_WORLD_LOCAL_RANK"));
+  } else if (getenv("OMPI_COMM_WORLD_LOCAL_RANK") != NULL) {
+      local_rank = atoi(getenv("OMPI_COMM_WORLD_LOCAL_RANK"));
+  }
+  if (local_rank == 0) {
+      req_dev = "mlx5_0";
+  } else {
+      req_dev = "mlx5_1";
+  }
+  fprintf(stderr, "[rank: %d] using device %s \n", mpi_comm_rank, req_dev);
+
 
   ib_dev = dev_list[0];
   if (req_dev != NULL) {
