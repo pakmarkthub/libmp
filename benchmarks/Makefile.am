@@ -47,7 +47,7 @@ noinst_PROGRAMS =
 CCLD=$(MPICXX)
 CXXLD=$(MPICXX)
 
-LINK = $(LIBTOOL) --tag=CXX --mode=link $(CXXLD) -o $@ $(AM_LDFLAGS) $(AM_LIBS)
+LINK = $(LIBTOOL) --tag=CXX --mode=link $(CXXLD) -g -o $@ $(AM_LDFLAGS) $(AM_LIBS)
 
 mp_pingpong_all_SOURCES = mp_pingpong_all.cu
 mp_sendrecv_kernel_stream_SOURCES = mp_sendrecv_kernel_stream.cu
@@ -62,7 +62,7 @@ mp_pingpong_kernel_SOURCES = mp_pingpong_kernel.cu
 SUFFIXES= .cu
 
 .cu.o:
-	$(NVCC) $(NVCCFLAGS) $(AM_CPPFLAGS) -c -o $@ $<
+	$(NVCC) $(NVCCFLAGS) $(AM_CPPFLAGS) -g -c -o $@ $<
 
 .cu.lo:
 	$(LIBTOOL) --tag=CC --mode=compile $(NVCC) $(NVCCFLAGS) $(AM_CPPFLAGS) -o $@ -c $< $(NVCCLDFLAGS)

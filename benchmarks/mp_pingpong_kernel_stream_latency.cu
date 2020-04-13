@@ -41,8 +41,6 @@
 #include "mp/device.cuh"
 #include <vector>
 
-#include "prof.h"
-
 #define NULL_CHECK(ptr)                                 \
 do {                                                    \
     if (ptr == NULL) {                                  \
@@ -94,7 +92,7 @@ int enable_debug_prints = 0;
     }                                                                   \
 } while(0)
 
-#define MAX_SIZE 1*1024*1024 
+#define MAX_SIZE 256*1024
 #define ITER_COUNT_SMALL 1024
 #define ITER_COUNT_LARGE 1024
 
@@ -117,6 +115,7 @@ __device__ int my_rank_d;
 __device__ uint32_t windex_max_d;
 __device__ uint32_t sindex_max_d;
 
+FILE *cputimes,*streamtimes;
 //per-stream state
 typedef struct {
     float *in = NULL;
@@ -155,12 +154,6 @@ volatile int *delay_flag;
 volatile int *delay_flag_dptr;
 __device__ int counter;
 __device__ int clockrate;
-
-//profiling
-struct prof prof_normal;
-struct prof prof_async;
-int prof_start = 0;
-int prof_idx = 0;
 
 __global__ void calc_kernel(int n, float c, float *in, float *out)
 {
@@ -760,15 +753,14 @@ void post_work_sync (int size, int batch_index, long long int kernel_size)
 
 double prepost_latency;
 
-double sr_exchange (MPI_Comm comm, int size, int iter_count, long long int kernel_size, int use_async, int use_kernel_ops = 0, int use_graphs = 0)
+double sr_exchange (MPI_Comm comm, int size, int iter_count, int print_times, long long int kernel_size, 
+            int use_async, int use_kernel_ops = 0, int use_graphs = 0)
 {
-    float time_elapsed;
+    double time_start, time_stop;
+    float cputime_elapsed, streamtime_elapsed;
     int batch_count, wait_send_batch = 0, wait_recv_batch = 0;
-    struct prof *prof = NULL;
     int j;
 
-    prof = (use_async) ? &prof_async : &prof_normal;
- 
     if (iter_count%steps_per_batch != 0) { 
 	fprintf(stderr, "iter_count must be a multiple of steps_per_batch: %d \n", steps_per_batch);
 	exit(-1);
@@ -785,15 +777,19 @@ double sr_exchange (MPI_Comm comm, int size, int iter_count, long long int kerne
         CUDA_CHECK(cudaMemset((void *)curr_stream->windex_d, 
         		    0, sizeof(unsigned int)));
     }
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     post_recv (size, 0);
 
     MPI_Barrier(MPI_COMM_WORLD);
 
     *delay_flag = 0;
-    CU_CHECK(cuStreamWaitValue32(main_stream, (CUdeviceptr)delay_flag_dptr, 1, CU_STREAM_WAIT_VALUE_EQ));
-    CUDA_CHECK(cudaEventRecord(timer_start_event, main_stream));
- 
+    if (use_async) { 
+        CU_CHECK(cuStreamWaitValue32(main_stream, (CUdeviceptr)delay_flag_dptr, 1, CU_STREAM_WAIT_VALUE_EQ));
+        CUDA_CHECK(cudaEventRecord(timer_start_event, main_stream));
+    }
+    time_start = MPI_Wtime();
+
     for (j=0; (j<batches_inflight) && (j<batch_count); j++) { 
         if (j<(batch_count-1)) {
 	    post_recv (size, j+1);
@@ -817,27 +813,18 @@ double sr_exchange (MPI_Comm comm, int size, int iter_count, long long int kerne
     *((volatile int *)delay_flag) = 1;
 
     wait_send_batch = wait_recv_batch = 0;
-    prof_idx = 0;
     while (wait_send_batch < batch_count) { 
-        if (!my_rank && prof_start) PROF(prof, prof_idx++);
-
         if (use_async) {
             wait_recv (wait_recv_batch);
             wait_recv_batch++;
         }
 
-        if (!my_rank && prof_start) PROF(prof, prof_idx++); 
-
         wait_send (wait_send_batch);
         wait_send_batch++;
-
-        if (!my_rank && prof_start) PROF(prof, prof_idx++);
 
         if (j < (batch_count-1)) {
             post_recv (size, j+1);
         }
-
-        if (!my_rank && prof_start) PROF(prof, prof_idx++);
 
         if (j < batch_count) { 
            if (use_async) { 
@@ -853,27 +840,35 @@ double sr_exchange (MPI_Comm comm, int size, int iter_count, long long int kerne
            } else { 
                post_work_sync (size, j, kernel_size);
            }
-        }
 
-        if (!my_rank && prof_start)  {
-            PROF(prof, prof_idx++);
-            prof_update(prof);
-            prof_idx = 0;
+           j++;
         }
-
-        j++;
     }
 
     MPI_Barrier(comm);
 
-    CUDA_CHECK(cudaEventRecord(timer_stop_event, main_stream));
+    if (use_async) { 
+        CUDA_CHECK(cudaEventRecord(timer_stop_event, main_stream));
+    }
     CUDA_CHECK(cudaStreamSynchronize(main_stream));
-    CUDA_CHECK(cudaEventElapsedTime(&time_elapsed, timer_start_event, timer_stop_event));
-    time_elapsed = ((time_elapsed*1e3)/(iter_count*2)); 
- 
+    if (use_async) { 
+        CUDA_CHECK(cudaEventElapsedTime(&streamtime_elapsed, timer_start_event, timer_stop_event));
+        streamtime_elapsed = ((streamtime_elapsed*1e3)/(iter_count*2)); 
+    }
+    time_stop = MPI_Wtime();
+    cputime_elapsed = (time_stop - time_start);
+    cputime_elapsed = ((cputime_elapsed*1e6)/((double)iter_count*2)); 
+
+    if (print_times && !my_rank) {
+        //if not using async, stream times do not make sense setting it from cputime
+        if (!use_async) streamtime_elapsed = cputime_elapsed;
+        fprintf(streamtimes, "%8.2lf \t", streamtime_elapsed);
+        fprintf(cputimes, "%8.2lf \t", cputime_elapsed);
+    }
+
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    return (double)time_elapsed;
+    return (double)cputime_elapsed;
 }
 
 int main (int argc, char *argv[])
@@ -881,15 +876,12 @@ int main (int argc, char *argv[])
     int iter_count, max_size, size, dev_count, local_rank, dev_id = 0;
     long long int kernel_size = 20;
     int comm_comp_ratio = 1;
-    int validate = 0, user_iter_count = 0;
+    int user_iter_count = 0;
     size = 1;
     max_size = MAX_SIZE;
+    char line[200];
+    char *value;
 
-    char *value = getenv("ENABLE_VALIDATION");
-    if (value != NULL) {
-	validate = atoi(value);
-    }
- 
     value = getenv("ITER_COUNT");
     if (value != NULL) {
 	user_iter_count = atoi(value);
@@ -991,6 +983,13 @@ int main (int argc, char *argv[])
 
     iter_count = user_iter_count ? user_iter_count : ITER_COUNT_SMALL;
     if (!my_rank) { 
+        cputimes = fopen("cputimes.txt", "w+");
+        streamtimes = fopen("streamtimes.txt", "w+");
+        if (!cputimes || !streamtimes)
+        {
+            printf("Could not open log file");
+            exit(-1);
+        }
         fprintf(stdout, "steps_per_batch: %d num_streams: %d batches_inflight: %d \n", 
    		steps_per_batch, num_streams, batches_inflight);
         fprintf(stdout, "NOTE: printing half round-trip latency!!!\n");
@@ -1041,21 +1040,21 @@ int main (int argc, char *argv[])
     CUDA_CHECK(cudaEventCreateWithFlags(&timer_stop_event, 0));
  
     if (!my_rank) {
-	fprintf(stdout, "%10s \t", "Size");
-	if (use_calc_kernel) { 
-		fprintf(stdout, "%10s \t ", "CompSize");
-	} else {
-		fprintf(stdout, "%10s \t ", "CompTime");
-	}
-	fprintf(stdout, "%10s \t %10s \t  %10s \t %10s \t %10s \t %10s \t %10s \t %10s  \n", 
-			   "CPU", "CPU+Comp", "MP", "MP+Comp", "MP-SM", 
+	sprintf(line, "%10s \t %10s \t %10s \t %10s \t  %10s \t %10s \t %10s \t %10s \t %10s \t %10s  \n", 
+			   "MessageSize", "CompSize/Time", "CPU", "CPU+Comp", "MP", "MP+Comp", "MP-SM", 
 			   "MP-SM+Comp", "MP-Graph", "MP-Graph+Comp");
+        fprintf(cputimes, "%s", line);
+        fprintf(streamtimes, "%s", line);
     }
 
     if (size != 1) size = max_size = size;
-    for (; size<=max_size; size*=2) 
-    {
+    for (; size<=max_size; size*=2) {
 	double latency;
+
+        if (!my_rank) { 
+            fprintf(stdout, "run for size: %10d in progress \n", size);
+            fflush(stdout);
+        }
 
         if (size > 1024) {
             iter_count = user_iter_count ? user_iter_count : ITER_COUNT_LARGE;
@@ -1072,12 +1071,13 @@ int main (int argc, char *argv[])
         CUDA_CHECK(cudaDeviceSynchronize());
         MPI_Barrier(MPI_COMM_WORLD);
 
-        /*warmup base case and calculate kenrel time based on latency*/
-        sr_exchange(MPI_COMM_WORLD, size, iter_count, 0, 0/*use_async*/);
+        /*warmup base case*/
+        sr_exchange(MPI_COMM_WORLD, size, iter_count, 0/*print times*/, 0, 0/*use_async*/);
 
 	MPI_Barrier(MPI_COMM_WORLD);
 
-	latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, 0, 0/*use_async*/);
+        /*calculate kenrel time based on base case latency*/
+	latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, 0/*print times*/, 0, 0/*use_async*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
 
@@ -1086,8 +1086,10 @@ int main (int argc, char *argv[])
         else  
   	    kernel_size = (comm_comp_ratio > 0) ? comm_comp_ratio*(latency) : kernel_size;
 
-        if (!my_rank) fprintf(stdout, "%10d", size);
-        if (!my_rank) fprintf(stdout, "\t   %10lld", kernel_size);
+        if (!my_rank) {
+            fprintf(cputimes, "%10d \t %10lld \t", size, kernel_size);
+            fprintf(streamtimes, "%10d \t %10lld \t", size, kernel_size);
+        }
 
         /*create graph*/
 	if (capture_graph) { 
@@ -1100,112 +1102,104 @@ int main (int argc, char *argv[])
             create_async_graph (size, kernel_size);
         }
 
+        cudaProfilerStart();
 
-	/*warmup other variants*/
-        sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 0/*use_async*/);
+#if 0
+	/*warmup for all variants*/
+        sr_exchange(MPI_COMM_WORLD, size, iter_count, 0/*print times*/, kernel_size, 0/*use_async*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
 	
-        sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 1/*use_async*/);
+        sr_exchange(MPI_COMM_WORLD, size, iter_count, 0/*print times*/, kernel_size, 1/*use_async*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
 
-        sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 1/*use_async*/, 1/*use_kernel_ops*/);
+        sr_exchange(MPI_COMM_WORLD, size, iter_count, 0/*print times*/, kernel_size, 1/*use_async*/, 1/*use_kernel_ops*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
 
-	sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 1/*use_async*/, 1/*use_kernel_ops*/, 1/*use_graphs*/);
+	sr_exchange(MPI_COMM_WORLD, size, iter_count, 0/*print times*/, kernel_size, 1/*use_async*/, 1/*use_kernel_ops*/, 1/*use_graphs*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
 
-        cudaProfilerStart();
-	if (!my_rank) { 
-	    if (prof_init(&prof_normal, 10000, 10000, "10us", 100, 1, tags)) {
-                fprintf(stderr, "error in prof_init init.\n");
-                exit(-1);
-            }
-            prof_start = 1;
-	}
-
-	/*Normal*/
-        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, 0 /*no kernel*/, 0/*use_async*/);
+        /*Timed runs*/
+        /*Normal*/
+        sr_exchange(MPI_COMM_WORLD, size, iter_count, 1/*print times*/, 0 /*no kernel*/, 0/*use_async*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
-
-	if (!my_rank) fprintf(stdout, "\t   %8.2lf ", latency);
-        //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf)", latency, prepost_latency);
+#endif
 
 	/*Normal + Kernel*/
-        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 0/*use_async*/);
+        sr_exchange(MPI_COMM_WORLD, size, iter_count, 1/*print times*/, kernel_size, 0/*use_async*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
 
-        if (!my_rank) fprintf(stdout, "\t   %8.2lf ", latency);
-        //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf)", latency, prepost_latency);
-
+#if 0
 	/*Async*/
-        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, 0/*kernel_size*/, 1/*use_async*/);
+        sr_exchange(MPI_COMM_WORLD, size, iter_count, 1/*print times*/, 0/*kernel_size*/, 1/*use_async*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
-
-        if (!my_rank) fprintf(stdout, "\t   %8.2lf ", latency);
-        //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf)", latency, prepost_latency);
 
 	/*Async + kernel*/
-        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 1/*use_async*/);
+        sr_exchange(MPI_COMM_WORLD, size, iter_count, 1/*print times*/, kernel_size, 1/*use_async*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
 
-        if (!my_rank) fprintf(stdout, "\t   %8.2lf ", latency);
-        //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf)", latency, prepost_latency);
-
-	/*Async + Kernel Ops*/
-        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, 0 /*kernel_size*/, 1/*use_async*/, 1/*use_kernel_ops*/);
+        /*Async + Kernel Ops*/
+        sr_exchange(MPI_COMM_WORLD, size, iter_count, 1/*print times*/, 0 /*kernel_size*/, 1/*use_async*/, 1/*use_kernel_ops*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
-
-	if (!my_rank) fprintf(stdout, "\t   %8.2lf  ", latency);
-        //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf) \n", latency, prepost_latency);
-
+ 
 	/*Async + Kernel + Kernel Ops*/
-        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 1/*use_async*/, 1/*use_kernel_ops*/);
+        sr_exchange(MPI_COMM_WORLD, size, iter_count, 1/*print times*/, kernel_size, 1/*use_async*/, 1/*use_kernel_ops*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
 
-	if (!my_rank) fprintf(stdout, "\t   %8.2lf  ", latency);
-        //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf) \n", latency, prepost_latency);
-
-	/*Async + Kernel Ops + Graphs*/
-        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, 0 /*kernel_size*/, 1/*use_async*/, 1/*use_kernel_ops*/, 1/*use_graphs*/);
+        /*Async + Kernel Ops + Graphs*/
+        sr_exchange(MPI_COMM_WORLD, size, iter_count, 1/*print times*/, 0 /*kernel_size*/, 1/*use_async*/, 1/*use_kernel_ops*/, 1/*use_graphs*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
-
-	if (!my_rank) fprintf(stdout, "\t   %8.2lf  ", latency);
-        //if (!my_rank) fprintf(stdout, "\t   %8.2lf (%8.2lf) \n", latency, prepost_latency);
+#endif 
 
 	/*Async + Kernel + Kernel Ops + Graphs*/
-        latency = sr_exchange(MPI_COMM_WORLD, size, iter_count, kernel_size, 1/*use_async*/, 1/*use_kernel_ops*/, 1/*use_graphs*/);
+        sr_exchange(MPI_COMM_WORLD, size, iter_count, 1/*print times*/, kernel_size, 1/*use_async*/, 1/*use_kernel_ops*/, 1/*use_graphs*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
 
-	if (!my_rank) fprintf(stdout, "\t   %8.2lf  ", latency);
-
-	if (!my_rank) fprintf(stdout, " \n");
-
-        if (!my_rank && validate) fprintf(stdout, "SendRecv test passed validation with message size: %d \n", size);
+        //cudaProfilerStop();
 
         if (!my_rank) {
-	    //prof_dump(&prof_normal);
-	    prof_dump(&prof_async);
-	}
+            fprintf(streamtimes, "\n");
+            fprintf(cputimes, "\n");
+        }
 
-	/*destroy graphs*/
+        /*destroy graphs*/
         destroy_async_graph();
 
         for (int i=0; i<num_streams; i++) {
             mp_deregister(&stream_state[i].reg);
             CUDA_CHECK(cudaFree(stream_state[i].buf_d));
         }
+    }
+
+    if (!my_rank) {
+        fprintf(cputimes, " \n");
+        fprintf(streamtimes, " \n");
+    
+        rewind(cputimes);
+        rewind(streamtimes);
+        
+        fprintf(stdout, "******************** CPU Timing ********************** \n");
+    
+        while(fgets(line, 200, cputimes) != NULL) 
+            fprintf(stdout, "%s", line);
+        fprintf(stdout, "\n");
+
+        fprintf(stdout, "******************** STREAM Timing ********************** \n");
+    
+        while(fgets(line, 200, streamtimes) != NULL) 
+            fprintf(stdout, "%s", line);
+        fprintf(stdout, "\n");
     }
 
     for (int i=0; i<num_streams; i++) { 
@@ -1215,7 +1209,10 @@ int main (int argc, char *argv[])
     }
     CUDA_CHECK(cudaStreamDestroy(main_stream));
     free(stream_state);
-
+    if (!my_rank) { 
+        fclose(streamtimes);
+        fclose(cputimes);
+    }
     mp_finalize ();
 
     MPI_Barrier(MPI_COMM_WORLD);
