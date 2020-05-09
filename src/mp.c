@@ -466,7 +466,7 @@ int mp_progress_single_flow(mp_flow_t flow)
             mp_dbg_msg("cannot poll client[%d] flow=%s\n", client->mpi_rank, flow_str);
             continue;
         }
-        ne = ibv_poll_cq(cq->cq, cqe_count, wc);
+        ne = gds_poll_cq(cq, cqe_count, wc);
         //mp_dbg_msg("client[%d] flow=%s cqe_count=%d nw=%d\n", client->mpi_rank, flow_str, cqe_count, ne);
         if (ne == 0) {
             //if (errno) mp_dbg_msg("client[%d] flow=%s errno=%s\n", client->mpi_rank, flow_str, strerror(errno));
@@ -1080,8 +1080,8 @@ int mp_init (MPI_Comm comm, int *peers, int count, int init_flags, int gpu_id)
           mp_err_msg("qp creation failed \n");
           return MP_FAILURE;
       }
-      clients[i].send_cq = &clients[i].qp->send_cq;
-      clients[i].recv_cq = &clients[i].qp->recv_cq;
+      clients[i].send_cq = clients[i].qp->send_cq;
+      clients[i].recv_cq = clients[i].qp->recv_cq;
 
       assert(clients[i].qp);
       assert(clients[i].send_cq);
@@ -1100,7 +1100,7 @@ int mp_init (MPI_Comm comm, int *peers, int count, int init_flags, int gpu_id)
           flags                      = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
       }
 
-      ret = ibv_modify_qp (clients[i].qp->qp, &ib_qp_attr, flags);
+      ret = ibv_modify_qp(clients[i].qp->ibqp, &ib_qp_attr, flags);
       if (ret != 0) {
           mp_err_msg("Failed to modify QP to INIT: %d, %s\n", ret, strerror(errno));
           exit(EXIT_FAILURE);
@@ -1109,7 +1109,7 @@ int mp_init (MPI_Comm comm, int *peers, int count, int init_flags, int gpu_id)
 //      mp_query_print_qp(clients[i].qp, NULL, 0);
 
       qpinfo_all[peer].lid = ib_port_attr.lid;
-      qpinfo_all[peer].qpn = clients[i].qp->qp->qp_num;
+      qpinfo_all[peer].qpn = clients[i].qp->ibqp->qp_num;
       qpinfo_all[peer].psn = 0;
       mp_dbg_msg("QP lid:%04x qpn:%06x psn:%06x\n", 
                  qpinfo_all[peer].lid,
@@ -1147,7 +1147,7 @@ int mp_init (MPI_Comm comm, int *peers, int count, int init_flags, int gpu_id)
               | IBV_QP_MIN_RNR_TIMER | IBV_QP_MAX_DEST_RD_ATOMIC;
       }
 
-      ret = ibv_modify_qp(clients[i].qp->qp, &ib_qp_attr, flags);
+      ret = ibv_modify_qp(clients[i].qp->ibqp, &ib_qp_attr, flags);
       if (ret != 0) {
           mp_err_msg("Failed to modify RC QP to RTR\n");
           return MP_FAILURE;
@@ -1177,7 +1177,7 @@ int mp_init (MPI_Comm comm, int *peers, int count, int init_flags, int gpu_id)
             | IBV_QP_MAX_QP_RD_ATOMIC;
       }
 
-      ret = ibv_modify_qp(clients[i].qp->qp, &ib_qp_attr, flags);
+      ret = ibv_modify_qp(clients[i].qp->ibqp, &ib_qp_attr, flags);
       if (ret != 0)
       {
         mp_err_msg("Failed to modify RC QP to RTS\n");
@@ -1609,8 +1609,8 @@ int mp_isend (void *buf, int size, int peer, mp_reg_t *reg_t, mp_request_t *req_
     else
     {
         req->in.sr.next = NULL;
-        req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+        req->in.sr.send_flags = IBV_SEND_SIGNALED;
+        req->in.sr.opcode = IBV_WR_SEND;
         req->in.sr.wr_id = (uintptr_t) req;
         req->in.sr.num_sge = 1;
         req->in.sr.sg_list = &req->sg_entry;
@@ -1680,8 +1680,8 @@ int mp_isendv (struct iovec *v, int nvecs, int peer, mp_reg_t *reg_t, mp_request
   }
 
   req->in.sr.next = NULL;
-  req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-  req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+  req->in.sr.send_flags = IBV_SEND_SIGNALED;
+  req->in.sr.opcode = IBV_WR_SEND;
   req->in.sr.wr_id = (uintptr_t) req;
   req->in.sr.num_sge = nvecs;
   req->in.sr.sg_list = req->sgv;
@@ -1889,12 +1889,12 @@ int mp_iput (void *src, int size, mp_reg_t *reg_t, int peer, size_t displ,
   req->flags = flags;
   req->in.sr.next = NULL;
   if (flags & MP_PUT_NOWAIT)
-      req->in.sr.exp_send_flags = 0;
+      req->in.sr.send_flags = 0;
   else
-      req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
+      req->in.sr.send_flags = IBV_SEND_SIGNALED;
   if (flags & MP_PUT_INLINE)
-      req->in.sr.exp_send_flags |= IBV_EXP_SEND_INLINE;
-  req->in.sr.exp_opcode = IBV_EXP_WR_RDMA_WRITE;
+      req->in.sr.send_flags |= IBV_SEND_INLINE;
+  req->in.sr.opcode = IBV_WR_RDMA_WRITE;
   req->in.sr.wr_id = (uintptr_t) req;
   req->in.sr.num_sge = 1;
   req->in.sr.sg_list = &req->sg_entry;
@@ -1948,8 +1948,8 @@ int mp_iget (void *dst, int size, mp_reg_t *reg_t, int peer, size_t displ,
   req = new_request(client, MP_RDMA, MP_PENDING_NOWAIT);
 
   req->in.sr.next = NULL;
-  req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-  req->in.sr.exp_opcode = IBV_WR_RDMA_READ;
+  req->in.sr.send_flags = IBV_SEND_SIGNALED;
+  req->in.sr.opcode = IBV_WR_RDMA_READ;
   req->in.sr.wr_id = (uintptr_t) req;
   req->in.sr.num_sge = 1;
   req->in.sr.sg_list = &req->sg_entry;

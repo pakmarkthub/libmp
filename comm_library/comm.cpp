@@ -278,7 +278,7 @@ static size_t comm_size_of_mpi_type(MPI_Datatype mpi_type)
         ret = sizeof(int);
     }
     else {
-        comm_err("invalid type %x\n", mpi_type);
+        comm_err("invalid type %px\n", mpi_type);
         exit(1);
     }
     return ret;

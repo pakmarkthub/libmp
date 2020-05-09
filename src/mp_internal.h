@@ -308,7 +308,7 @@ static int mp_query_print_qp(struct gds_qp *qp, struct mp_request *req, int asyn
     memset(&qp_attr, 0, sizeof(struct ibv_qp_attr));
 
 
-    if (ibv_query_qp(qp->qp, &qp_attr, IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_CAP, &qp_init_attr))
+    if (ibv_query_qp(qp->ibqp, &qp_attr, IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_CAP, &qp_init_attr))
     {
         mp_err_msg("client query qp attr fail\n");
         return MP_FAILURE;

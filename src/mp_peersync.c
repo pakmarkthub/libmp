@@ -242,8 +242,8 @@ int mp_send_on_stream (void *buf, int size, int peer, mp_reg_t *reg_t,
         assert(req);
 
         req->in.sr.next = NULL;
-        req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+        req->in.sr.send_flags = IBV_SEND_SIGNALED;
+        req->in.sr.opcode = IBV_WR_SEND;
         req->in.sr.wr_id = (uintptr_t) req;
         req->in.sr.num_sge = 1;
         req->in.sr.sg_list = &req->sg_entry;
@@ -323,8 +323,8 @@ int mp_send_on_stream (void *buf, int size, int peer, mp_reg_t *reg_t,
 
         assert(req);
         req->in.sr.next = NULL;
-        req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+        req->in.sr.send_flags = IBV_SEND_SIGNALED;
+        req->in.sr.opcode = IBV_WR_SEND;
         req->in.sr.wr_id = (uintptr_t) req;
         req->in.sr.num_sge = 1;
         req->in.sr.sg_list = &(req->sg_entry);
@@ -374,8 +374,8 @@ int mp_isend_on_stream (void *buf, int size, int peer, mp_reg_t *reg_t,
         assert(req);
 
         req->in.sr.next = NULL;
-        req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+        req->in.sr.send_flags = IBV_SEND_SIGNALED;
+        req->in.sr.opcode = IBV_WR_SEND;
         req->in.sr.wr_id = (uintptr_t) req;
         req->in.sr.num_sge = 1;
         req->in.sr.sg_list = &req->sg_entry;
@@ -427,8 +427,8 @@ int mp_isend_on_stream (void *buf, int size, int peer, mp_reg_t *reg_t,
         mp_dbg_msg("req=%p id=%d\n", req, req->id);
 
         req->in.sr.next = NULL;
-        req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+        req->in.sr.send_flags = IBV_SEND_SIGNALED;
+        req->in.sr.opcode = IBV_WR_SEND;
         req->in.sr.wr_id = (uintptr_t) req;
         req->in.sr.num_sge = 1;
         req->in.sr.sg_list = &(req->sg_entry);
@@ -553,8 +553,8 @@ int mp_isendv_on_stream (struct iovec *v, int nvecs, int peer, mp_reg_t *reg_t,
   }
 
   req->in.sr.next = NULL;
-  req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-  req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+  req->in.sr.send_flags = IBV_SEND_SIGNALED;
+  req->in.sr.opcode = IBV_WR_SEND;
   req->in.sr.wr_id = (uintptr_t) req;
   req->in.sr.num_sge = nvecs;
   req->in.sr.sg_list = req->sgv;
@@ -594,8 +594,8 @@ int mp_send_prepare(void *buf, int size, int peer, mp_reg_t *reg_t, mp_request_t
 
     if (use_event_sync) {
         req->in.sr.next = NULL;
-        req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+        req->in.sr.send_flags = IBV_SEND_SIGNALED;
+        req->in.sr.opcode = IBV_WR_SEND;
         req->in.sr.wr_id = (uintptr_t) req;
         req->in.sr.num_sge = 1;
         req->in.sr.sg_list = &req->sg_entry;
@@ -611,8 +611,8 @@ int mp_send_prepare(void *buf, int size, int peer, mp_reg_t *reg_t, mp_request_t
         req->sg_entry.addr = (uintptr_t)(buf);
     } else {
         req->in.sr.next = NULL;
-        req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-        req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+        req->in.sr.send_flags = IBV_SEND_SIGNALED;
+        req->in.sr.opcode = IBV_WR_SEND;
         req->in.sr.wr_id = (uintptr_t) req;
         req->in.sr.num_sge = 1;
         req->in.sr.sg_list = &(req->sg_entry);
@@ -689,8 +689,8 @@ int mp_sendv_prepare(struct iovec *v, int nvecs, int peer, mp_reg_t *reg_t, mp_r
   }
 
   req->in.sr.next = NULL;
-  req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-  req->in.sr.exp_opcode = IBV_EXP_WR_SEND;
+  req->in.sr.send_flags = IBV_SEND_SIGNALED;
+  req->in.sr.opcode = IBV_WR_SEND;
   req->in.sr.wr_id = (uintptr_t) req;
   req->in.sr.num_sge = nvecs;
   req->in.sr.sg_list = req->sgv;
@@ -1301,15 +1301,15 @@ int mp_put_prepare (void *src, int size, mp_reg_t *reg_t, int peer, size_t displ
   req->in.sr.next = NULL;
   if (flags & MP_PUT_NOWAIT) {
       mp_dbg_msg("MP_PUT_NOWAIT set\n");
-      req->in.sr.exp_send_flags = 0;
+      req->in.sr.send_flags = 0;
   } else {
-      req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
+      req->in.sr.send_flags = IBV_SEND_SIGNALED;
   }
   if (flags & MP_PUT_INLINE) {
       mp_dbg_msg("setting SEND_INLINE flag\n");
-      req->in.sr.exp_send_flags |= IBV_EXP_SEND_INLINE;
+      req->in.sr.send_flags |= IBV_SEND_INLINE;
   }
-  req->in.sr.exp_opcode = IBV_EXP_WR_RDMA_WRITE;
+  req->in.sr.opcode = IBV_WR_RDMA_WRITE;
   req->in.sr.wr_id = (uintptr_t) req;
   req->in.sr.num_sge = 1;
   req->in.sr.sg_list = &req->sg_entry;
@@ -1381,15 +1381,15 @@ int mp_iput_on_stream (void *src, int size, mp_reg_t *reg_t, int peer, size_t di
   req->in.sr.next = NULL;
   if (flags & MP_PUT_NOWAIT) {
       mp_dbg_msg("MP_PUT_NOWAIT set\n");
-      req->in.sr.exp_send_flags = 0;
+      req->in.sr.send_flags = 0;
   } else {
-      req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
+      req->in.sr.send_flags = IBV_SEND_SIGNALED;
   }
   if (flags & MP_PUT_INLINE) {
       mp_dbg_msg("setting SEND_INLINE flag\n");
-      req->in.sr.exp_send_flags |= IBV_EXP_SEND_INLINE;
+      req->in.sr.send_flags |= IBV_SEND_INLINE;
   }
-  req->in.sr.exp_opcode = IBV_EXP_WR_RDMA_WRITE;
+  req->in.sr.opcode = IBV_WR_RDMA_WRITE;
   req->in.sr.wr_id = (uintptr_t) req;
   req->in.sr.num_sge = 1;
   req->in.sr.sg_list = &req->sg_entry;
@@ -1455,8 +1455,8 @@ int mp_iget_on_stream (void *dst, int size, mp_reg_t *reg_t, int peer, size_t di
   assert(req);
 
   req->in.sr.next = NULL;
-  req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-  req->in.sr.exp_opcode = IBV_EXP_WR_RDMA_READ;
+  req->in.sr.send_flags = IBV_SEND_SIGNALED;
+  req->in.sr.opcode = IBV_WR_RDMA_READ;
   req->in.sr.wr_id = (uintptr_t) req;
   req->in.sr.num_sge = 1;
   req->in.sr.sg_list = &req->sg_entry;
