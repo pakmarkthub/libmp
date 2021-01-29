@@ -1104,7 +1104,6 @@ int main (int argc, char *argv[])
 
         cudaProfilerStart();
 
-#if 0
 	/*warmup for all variants*/
         sr_exchange(MPI_COMM_WORLD, size, iter_count, 0/*print times*/, kernel_size, 0/*use_async*/);
 
@@ -1127,14 +1126,12 @@ int main (int argc, char *argv[])
         sr_exchange(MPI_COMM_WORLD, size, iter_count, 1/*print times*/, 0 /*no kernel*/, 0/*use_async*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
-#endif
 
 	/*Normal + Kernel*/
         sr_exchange(MPI_COMM_WORLD, size, iter_count, 1/*print times*/, kernel_size, 0/*use_async*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
 
-#if 0
 	/*Async*/
         sr_exchange(MPI_COMM_WORLD, size, iter_count, 1/*print times*/, 0/*kernel_size*/, 1/*use_async*/);
 
@@ -1159,7 +1156,6 @@ int main (int argc, char *argv[])
         sr_exchange(MPI_COMM_WORLD, size, iter_count, 1/*print times*/, 0 /*kernel_size*/, 1/*use_async*/, 1/*use_kernel_ops*/, 1/*use_graphs*/);
 
         MPI_Barrier(MPI_COMM_WORLD);
-#endif 
 
 	/*Async + Kernel + Kernel Ops + Graphs*/
         sr_exchange(MPI_COMM_WORLD, size, iter_count, 1/*print times*/, kernel_size, 1/*use_async*/, 1/*use_kernel_ops*/, 1/*use_graphs*/);
