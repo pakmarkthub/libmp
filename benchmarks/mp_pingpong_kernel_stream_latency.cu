@@ -388,7 +388,7 @@ void create_async_graph (size_t size, long long int kernel_size)
     CUDA_CHECK(cudaGraphCreate(&subgraph, 0));
     CUDA_CHECK(cudaGraphCreate(&subgraph_comms, 0));
 
-    preParams.func = graph_prepare_work;
+    preParams.fn = graph_prepare_work;
     preParams.userData = graph_pre_arg;
 
     for(int k=0; k<num_streams; k++) {
@@ -524,8 +524,8 @@ void create_async_graph (size_t size, long long int kernel_size)
 
     //create a graph for a batch of iterations
     //graph with compute and comms 
-    CUDA_CHECK(cudaGraphAddHostNode(&preNode, graph, NULL, 0, preParams));
-    nodeDependencies.clear()
+    CUDA_CHECK(cudaGraphAddHostNode(&preNode, graph, NULL, 0, &preParams));
+    nodeDependencies.clear();
     nodeDependencies.push_back(preNode);
     CUDA_CHECK(cudaGraphAddChildGraphNode(&subgraphNode_prev, graph, nodeDependencies.data(), nodeDependencies.size(), subgraph_comms)); 
     for (int k=1; k<steps_per_batch; k++) {
@@ -538,8 +538,8 @@ void create_async_graph (size_t size, long long int kernel_size)
     CUDA_CHECK(cudaGraphInstantiate(&graphexec, graph, NULL, NULL, 0));
 
     //graph with comms 
-    CUDA_CHECK(cudaGraphAddHostNode(&preNode, graph, NULL, 0, preParams));
-    nodeDependencies.clear()
+    CUDA_CHECK(cudaGraphAddHostNode(&preNode, graph_comms, NULL, 0, &preParams));
+    nodeDependencies.clear();
     nodeDependencies.push_back(preNode);
     CUDA_CHECK(cudaGraphAddChildGraphNode(&subgraphNode_prev, graph_comms, nodeDependencies.data(), nodeDependencies.size(), subgraph_comms)); 
     for (int k=1; k<steps_per_batch; k++) {
