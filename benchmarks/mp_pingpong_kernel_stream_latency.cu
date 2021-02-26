@@ -140,6 +140,7 @@ typedef struct {
 typedef struct {
     int size;
     int batch_index;
+    int batch_count;
 } graph_preparation_arg_t;
 
 //global state
@@ -309,15 +310,21 @@ void prepare_work_async_graphs (int size, int batch_index)
 void graph_prepare_work (void *data)
 {
     graph_preparation_arg_t *arg = (graph_preparation_arg_t *)data;
+    //printf("graph_prepare_work: my_rank=%d, size=%d, batch_index=%d\n", my_rank, arg->size, arg->batch_index);
+    if (arg->batch_index < arg->batch_count - 1)
+        post_recv(arg->size, arg->batch_index + 1);
     prepare_work_async_graphs(arg->size, arg->batch_index);
+    //printf("graph_prepare_work: my_rank=%d, done\n", my_rank);
 }
 
 void graph_post_work (void *data)
 {
     graph_preparation_arg_t *arg = (graph_preparation_arg_t *)data;
+    //printf("graph_post_work: my_rank=%d, size=%d, batch_index=%d\n", my_rank, arg->size, arg->batch_index);
     wait_recv(arg->batch_index);
     wait_send(arg->batch_index);
     ++arg->batch_index;
+    //printf("graph_post_work: my_rank=%d, done\n", my_rank);
 }
 
 void capture_async_graph (int size, long long int kernel_size) 
@@ -843,10 +850,11 @@ double sr_exchange (MPI_Comm comm, int size, int iter_count, int print_times, lo
     if (use_graphs) {
         graph_pre_arg->size = size;
         graph_pre_arg->batch_index = 0;
+        graph_pre_arg->batch_count = batch_count;
     }
 
     for (j=0; (j<batches_inflight) && (j<batch_count); j++) { 
-        if (j<(batch_count-1)) {
+        if (!use_graphs && j<(batch_count-1)) {
             post_recv (size, j+1);
         }
 
@@ -877,12 +885,10 @@ double sr_exchange (MPI_Comm comm, int size, int iter_count, int print_times, lo
 
         if (!use_graphs)
             wait_send (wait_send_batch);
-        else
-            CUDA_CHECK(cudaStreamSynchronize(main_stream));
             
         wait_send_batch++;
 
-        if (j < (batch_count-1)) {
+        if (!use_graphs && j < (batch_count-1)) {
             post_recv (size, j+1);
         }
 
