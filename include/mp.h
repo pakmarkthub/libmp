@@ -208,6 +208,159 @@ int mp_desc_queue_add_wait_value32(mp_desc_queue_t *dq, uint32_t *ptr, uint32_t 
 int mp_desc_queue_add_write_value32(mp_desc_queue_t *dq, uint32_t *ptr, uint32_t value);
 int mp_desc_queue_post_on_stream(cudaStream_t stream, mp_desc_queue_t *dq, int flags);
 
+
+/**
+ * Graph and CUDA-kernel related primitives
+ */
+
+typedef struct mp_kernel_gs* mp_kernel_gs_t;
+typedef uint32_t mp_gs_req_t;
+
+
+/**
+ * \brief Set up `gs` to for the specified `graph`.
+ * \param graph - Graph to be used for this mp communication.
+ * \param max_num_send - Maximum number of inflight send requests.
+ * \param max_num_recv - Maximum number of inflight receive requests.
+ * \param peer - Peer number to be associated with this mp communication.
+ * \param gs - Return mp_kernel_gs_t object to be used with other mp_graph_* API.
+ *
+ * \return MP_SUCCESS, MP_FAILURE
+ */
+int mp_graph_setup(cudaGraph_t graph, uint32_t max_num_send, uint32_t max_num_recv, int peer, mp_kernel_gs_t *gs);
+
+/**
+ * \brief Create a graph intent for mp communication preparation. This function must be called before mp_graph_add_*_node.
+ * \param gs - mp_kernel_gs_t object.
+ * \param dependencies - Graph nodes that must be executed before launching the preparation.
+ * \param dep_size - Number of elements in `dependencies`.
+ *
+ * \return MP_SUCCESS, MP_FAILURE
+ */
+int mp_graph_begin(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size);
+
+/**
+ * \brief Create a graph intent for mp communication wrapup.
+ *      mp_graph_add_*_node cannot be used after this function. This function must
+ *      be called if `mp_graph_begin` is called.
+ * \param gs - mp_kernel_gs_t object.
+ * \param dependencies - Graph nodes that must be executed before the wrapup. 
+ * \param dep_size - Number of elements in `dependencies`.
+ *
+ * \return MP_SUCCESS, MP_FAILURE
+ */
+int mp_graph_end(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size);
+
+/**
+ * \brief Create and add an mp-isend graph node on the graph.
+ * \param gs - mp_kernel_gs_t object.
+ * \param dependencies - Dependencies for this mp-isend graph node. 
+ * \param dep_size - Number of elements in `dependencies`.
+ * \param snode - Return this mp-isend graph node.
+ * \param sreq - Return the gs request to be used in mp_graph_add_wait_node.
+ *
+ * \return MP_SUCCESS, MP_FAILURE
+ */
+int mp_graph_add_isend_node(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq);
+
+/**
+ * \brief Create and add an mp-irecv graph node on the graph.
+ * \param gs - mp_kernel_gs_t object.
+ * \param dependencies - Dependencies for this mp-irecv graph node. 
+ * \param dep_size - Number of elements in `dependencies`.
+ * \param rnode - Return this mp-irecv graph node.
+ * \param rreq - Return the gs request to be used in mp_graph_add_wait_node.
+ *
+ * \return MP_SUCCESS, MP_FAILURE
+ */
+int mp_graph_add_irecv_node(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *rnode, mp_gs_req_t *rreq);
+
+/**
+ * \brief Create and add an mp-wait graph node on the graph.
+ * \param gs - mp_kernel_gs_t object.
+ * \param req - gs request object to wait.
+ * \param dependencies - Dependencies for this mp-wait graph node. 
+ * \param dep_size - Number of elements in `dependencies`.
+ * \param wnode - Return this mp-wait graph node.
+ *
+ * \return MP_SUCCESS, MP_FAILURE
+ */
+int mp_graph_add_wait_node(mp_kernel_gs_t gs, mp_gs_req_t req, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *wnode);
+
+
+/**
+ * \brief Setup `gs` for the specified `stream`.
+ * \param stream - cudaStream for this `gs`. The `stream` must be being captured.
+ * \param max_num_send - Maximum number of inflight send requests.
+ * \param max_num_recv - Maximum number of inflight receive requests.
+ * \param peer - Peer number to be associated with this mp communication.
+ * \param gs - Return mp_kernel_gs_t object to be used with other mp_kernstream_* API.
+ *
+ * \return MP_SUCCESS, MP_FAILURE
+ */
+int mp_kernstream_setup(cudaStream_t stream, uint32_t max_num_send, uint32_t max_num_recv, int peer, mp_kernel_gs_t *gs);
+
+/**
+ * \brief Add mp preparation phase to the stream.
+ * \param gs - mp_kernel_gs_t object.
+ *
+ * \return MP_SUCCESS, MP_FAILURE
+ */
+int mp_kernstream_begin(mp_kernel_gs_t gs);
+
+/**
+ * \brief Add mp wrapup phase to the stream.
+ * \param gs - mp_kernel_gs_t object.
+ *
+ * \return MP_SUCCESS, MP_FAILURE
+ */
+int mp_kernstream_end(mp_kernel_gs_t gs);
+
+/**
+ * \brief Add CUDA-kernel mp-isend to the stream.
+ * \param gs - mp_kernel_gs_t object.
+ * \param sreq - Return mp_gs_req_t for later use in mp_kernstream_wait.
+ *
+ * \return MP_SUCCESS, MP_FAILURE
+ */
+int mp_kernstream_isend(mp_kernel_gs_t gs, mp_gs_req_t *sreq);
+
+/**
+ * \brief Add CUDA-kernel mp-irecv to the stream.
+ * \param gs - mp_kernel_gs_t object.
+ * \param rreq - Return mp_gs_req_t for later use in mp_kernstream_wait.
+ *
+ * \return MP_SUCCESS, MP_FAILURE
+ */
+int mp_kernstream_irecv(mp_kernel_gs_t gs, mp_gs_req_t *rreq);
+
+/**
+ * \brief Add CUDA-kernel mp-wait to the stream.
+ * \param gs - mp_kernel_gs_t object.
+ * \param req - Wait on the specified `req`.
+ *
+ * \return MP_SUCCESS, MP_FAILURE
+ */
+int mp_kernstream_wait(mp_kernel_gs_t gs, mp_gs_req_t req);
+
+/**
+ * \brief Notify mp that the stream has been converted to `graph`. If this
+ *      function returns successfully, `gs` is compatible with mp_graph_*.
+ * \param gs - mp_kernel_gs_t object.
+ * \param graph - cudaGraph object that the `stream` has been converted to.
+ *
+ * \return MP_SUCCESS, MP_FAILURE
+ */
+int mp_kernstream_graph_init(mp_kernel_gs_t gs, cudaGraph_t graph);
+
+/**
+ * \brief Clean up and free `gs`.
+ * \param gs - mp_kernel_gs_t object.
+ *
+ * \return MP_SUCCESS, MP_FAILURE
+ */
+int mp_gs_cleanup(mp_kernel_gs_t gs);
+
 #ifdef __cplusplus
 }
 #endif

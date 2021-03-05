@@ -80,24 +80,24 @@ typedef enum mp_req_list {
 } mp_req_list_t;
 
 typedef struct {
-   uint32_t busy;
-   uint32_t free;
-   struct mp_request *sreq;
-   struct mp_request *rreq;
-   CUipcMemHandle handle;
-   void *base_addr; 
-   size_t base_size; 
-   void *addr; 
-   size_t size;
-   int offset; 
+    uint32_t busy;
+    uint32_t free;
+    struct mp_request *sreq;
+    struct mp_request *rreq;
+    CUipcMemHandle handle;
+    void *base_addr; 
+    size_t base_size; 
+    void *addr; 
+    size_t size;
+    int offset; 
 } smp_buffer_t;
 
 typedef struct {
-   smp_buffer_t *local_buffer;
-   smp_buffer_t *remote_buffer;
-   int local_tail_process;
-   int local_tail_complete;
-   int remote_head;	
+    smp_buffer_t *local_buffer;
+    smp_buffer_t *remote_buffer;
+    int local_tail_process;
+    int local_tail_complete;
+    int remote_head;	
 } smp_channel_t;
 
 typedef struct ipc_handle_cache_entry {
@@ -111,39 +111,39 @@ typedef struct ipc_handle_cache_entry {
 
 /*client resources*/
 typedef struct {
-   //void *region;
-   //int region_size;
-   int mpi_rank;
-   int stream_idx;
-   int num_streams;
-   uint32_t last_req_id;
-   uint32_t last_done_id;
-   uint32_t last_posted_trigger_id[N_FLOWS];
-   uint32_t last_posted_tracked_id[N_FLOWS];
-   uint32_t last_trigger_id[N_FLOWS]; //has to be moved to device
-   uint32_t last_tracked_id[N_FLOWS];
-   struct mp_request *last_posted_stream_req[N_FLOWS];
-   struct mp_request *posted_stream_req[N_FLOWS];
-   struct mp_request *last_waited_stream_req[N_FLOWS]; //head
-   struct mp_request *waited_stream_req[N_FLOWS]; //tail
-   /*ib related*/
-   struct gds_qp *qp;
-   struct gds_cq *send_cq;
-   struct gds_cq *recv_cq;
-   struct ibv_mr *region_mr;
-   //UD info
-   struct ibv_ah *ah;
-   uint32_t qpn;
-   //ICP
-   int is_local;
-   int local_rank;
-   int can_use_ipc;
-   smp_channel_t smp;
-   ipc_handle_cache_entry_t *ipc_handle_cache;
-   struct mp_request *last_posted_ipc_rreq;
-   struct mp_request *posted_ipc_rreq;
-   struct mp_request *last_processed_ipc_rreq;
-   struct mp_request *processed_ipc_rreq;
+    //void *region;
+    //int region_size;
+    int mpi_rank;
+    int stream_idx;
+    int num_streams;
+    uint32_t last_req_id;
+    uint32_t last_done_id;
+    uint32_t last_posted_trigger_id[N_FLOWS];
+    uint32_t last_posted_tracked_id[N_FLOWS];
+    uint32_t last_trigger_id[N_FLOWS]; //has to be moved to device
+    uint32_t last_tracked_id[N_FLOWS];
+    struct mp_request *last_posted_stream_req[N_FLOWS];
+    struct mp_request *posted_stream_req[N_FLOWS];
+    struct mp_request *last_waited_stream_req[N_FLOWS]; //head
+    struct mp_request *waited_stream_req[N_FLOWS]; //tail
+    /*ib related*/
+    struct gds_qp *qp;
+    struct gds_cq *send_cq;
+    struct gds_cq *recv_cq;
+    struct ibv_mr *region_mr;
+    //UD info
+    struct ibv_ah *ah;
+    uint32_t qpn;
+    //ICP
+    int is_local;
+    int local_rank;
+    int can_use_ipc;
+    smp_channel_t smp;
+    ipc_handle_cache_entry_t *ipc_handle_cache;
+    struct mp_request *last_posted_ipc_rreq;
+    struct mp_request *posted_ipc_rreq;
+    struct mp_request *last_processed_ipc_rreq;
+    struct mp_request *processed_ipc_rreq;
 } client_t;
 
 /*IB resources*/
@@ -160,44 +160,75 @@ struct mp_reg {
 struct CUstream_st;
 
 struct mp_request {
-   mp_req_type_t type;
-   int peer;
-   int status;
-   int trigger;
-   uint32_t id;
-   int flags;
-   struct CUstream_st *stream;
-   union
-   {
-       struct ibv_recv_wr rr;
-       gds_send_wr sr;
-   } in;
-   union
-   {
-       gds_send_wr* bad_sr;
-       struct ibv_recv_wr* bad_rr;
-   } out;
-   struct ibv_sge sg_entry;
-   struct ibv_sge ud_sg_entry[2];
-   struct ibv_sge *sgv;
-   gds_send_request_t gds_send_info;
-   gds_wait_request_t gds_wait_info;
-   struct mp_request *next;
-   struct mp_request *prev;
+    mp_req_type_t type;
+    int peer;
+    int status;
+    int trigger;
+    uint32_t id;
+    int flags;
+    struct CUstream_st *stream;
+    union
+    {
+        struct ibv_recv_wr rr;
+        gds_send_wr sr;
+    } in;
+    union
+    {
+        gds_send_wr* bad_sr;
+        struct ibv_recv_wr* bad_rr;
+    } out;
+    struct ibv_sge sg_entry;
+    struct ibv_sge ud_sg_entry[2];
+    struct ibv_sge *sgv;
+    gds_send_request_t gds_send_info;
+    gds_wait_request_t gds_wait_info;
+    struct mp_request *next;
+    struct mp_request *prev;
 }; 
 
+typedef enum mp_kernel_gs_type {
+    MP_KERNEL_SG_TYPE_GRAPH;
+    MP_KERNEL_SG_TYPE_STREAM;
+} mp_kernel_gs_type_t;
+
+struct mp_kernel_gs {
+    mp_kernel_gs_type_t type;
+
+    uint32_t num_sreq;
+    uint32_t num_rreq;
+
+    struct mp_request *sreq;
+    struct mp_request *rreq;
+
+    mp::mlx5::send_desc_t *sdesc;
+    mp::mlx5::send_desc_t *sdesc_d;
+    mp::mlx5::wait_desc_t *wdesc;
+    mp::mlx5::wait_desc_t *wdesc_d;
+
+    uint32_t sindex;
+    uint32_t windex;
+    uint32_t *sindex_d;
+    uint32_t *windex_d;
+
+    union
+    {
+        cudaGraph_t graph;
+        cudaStream_t stream;
+    };
+};
+
 struct mp_window {
-   void **base_ptr;
-   int size;
-   struct mp_reg *reg;
-   uint32_t lkey;
-   uint32_t *rkey;
-   uint64_t *rsize;
+    void **base_ptr;
+    int size;
+    struct mp_reg *reg;
+    uint32_t lkey;
+    uint32_t *rkey;
+    uint64_t *rsize;
 };
 
 typedef struct mem_region {
-  void *region;
-  struct mem_region *next;
+    void *region;
+    struct mem_region *next;
 } mem_region_t;
 
 extern client_t *clients;
