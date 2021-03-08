@@ -187,15 +187,15 @@ struct mp_request {
 }; 
 
 typedef enum mp_kernel_gs_type {
-    MP_KERNEL_SG_TYPE_GRAPH;
-    MP_KERNEL_SG_TYPE_STREAM;
+    MP_KERNEL_GS_TYPE_GRAPH;
+    MP_KERNEL_GS_TYPE_STREAM;
 } mp_kernel_gs_type_t;
 
 struct mp_kernel_gs {
     mp_kernel_gs_type_t type;
 
-    uint32_t num_sreq;
-    uint32_t num_rreq;
+    uint32_t max_num_sreq;
+    uint32_t max_num_rreq;
 
     struct mp_request *sreq;
     struct mp_request *rreq;

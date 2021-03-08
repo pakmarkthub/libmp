@@ -220,14 +220,13 @@ typedef uint32_t mp_gs_req_t;
 /**
  * \brief Set up `gs` to for the specified `graph`.
  * \param graph - Graph to be used for this mp communication.
- * \param max_num_send - Maximum number of inflight send requests.
- * \param max_num_recv - Maximum number of inflight receive requests.
- * \param peer - Peer number to be associated with this mp communication.
+ * \param max_num_send - Maximum number of in-flight send requests.
+ * \param max_num_recv - Maximum number of in-flight receive requests.
  * \param gs - Return mp_kernel_gs_t object to be used with other mp_graph_* API.
  *
  * \return MP_SUCCESS, MP_FAILURE
  */
-int mp_graph_setup(cudaGraph_t graph, uint32_t max_num_send, uint32_t max_num_recv, int peer, mp_kernel_gs_t *gs);
+int mp_graph_setup(cudaGraph_t graph, uint32_t max_num_send, uint32_t max_num_recv, mp_kernel_gs_t *gs);
 
 /**
  * \brief Create a graph intent for mp communication preparation. This function must be called before mp_graph_add_*_node.

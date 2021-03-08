@@ -2516,3 +2516,118 @@ int mp_query_param(mp_param_t param, int *value)
         return ret;
 }
 
+
+int mp_graph_setup(cudaGraph_t graph, uint32_t max_num_send, uint32_t max_num_recv, mp_kernel_gs_t *gs)
+{
+    int ret = 0;
+
+    cudaError_t cuda_result;
+
+    struct mp_kernel_gs *_gs = NULL;
+
+    if (!graph) {
+        mp_dbg_msg("graph cannot be NULL.\n");
+        ret = EINVAL;
+        goto out;
+    }
+
+    _gs = (struct mp_kernel_gs *)calloc(1, sizeof(struct mp_kernel_gs));
+    if (!_gs) {
+        mp_dbg_msg("Cannot allocate _gs.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
+    _gs->sreq = (struct mp_request *)calloc(max_num_send, sizeof(struct mp_request));
+    if (!_gs->sreq) {
+        mp_dbg_msg("Cannot allocate _gs->sreq.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
+    _gs->rreq = (struct mp_request *)calloc(max_num_recv, sizeof(struct mp_request));
+    if (!_gs->rreq) {
+        mp_dbg_msg("Cannot allocate _gs->rreq.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
+    cuda_result = cudaHostAlloc((void **)&_gs->sdesc, max_num_send * sizeof(mp::mlx5::send_desc_t), cudaHostAllocPortable | cudaHostAllocMapped);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Cannot allocate _gs->sdesc.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+    memset((void *)_gs->sdesc, 0, max_num_send * sizeof(mp::mlx5::send_desc_t));
+    cuda_result = cudaHostGetDevicePointer((void **)&_gs->sdesc_d, _gs->sdesc, 0);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Cannot get device pointer of _gs->sdesc_d.\n");
+        ret = EFAULT;
+        goto out;
+    }
+
+    cuda_result = cudaHostAlloc((void **)&_gs->wdesc, max_num_send * sizeof(mp::mlx5::wait_desc_t), cudaHostAllocPortable | cudaHostAllocMapped);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Cannot allocate _gs->wdesc.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+    memset((void *)_gs->wdesc, 0, max_num_send * sizeof(mp::mlx5::wait_desc_t));
+    cuda_result = cudaHostGetDevicePointer((void **)&_gs->wdesc_d, _gs->wdesc, 0);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Cannot get device pointer of _gs->wdesc.\n");
+        ret = EFAULT;
+        goto out;
+    }
+
+    cuda_result = cudaMalloc((void **)&_gs->sindex_d, sizeof(uint32_t));
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Cannot allocate _gs->sindex_d.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
+    cuda_result = cudaMalloc((void **)&_gs->windex_d, sizeof(uint32_t));
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Cannot allocate _gs->windex_d.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
+    _gs->type = MP_KERNEL_GS_TYPE_GRAPH;
+    _gs->max_num_sreq = max_num_send;
+    _gs->max_num_rreq = max_num_recv;
+    _gs->graph = graph;
+
+    *gs = _gs;
+
+out:
+    if (ret) {
+        if (_gs) {
+            if (_gs->windex_d)
+                cudaFree(_gs->windex_d);
+
+            if (_gs->sindex_d)
+                cudaFree(_gs->sindex_d);
+
+            if (_gs->wdesc)
+                cudaFreeHost(_gs->wdesc);
+
+            if (_gs->sdesc)
+                cudaFreeHost(_gs->sdesc);
+
+            if (_gs->rreq)
+                free(_gs->rreq);
+            
+            if (_gs->sreq)
+                free(_gs->sreq);
+            
+            free(_gs);
+        }
+
+        *gs = NULL;
+    }
+
+    return ret;
+}
+
