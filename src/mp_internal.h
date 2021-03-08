@@ -191,6 +191,17 @@ typedef enum mp_kernel_gs_type {
     MP_KERNEL_GS_TYPE_STREAM;
 } mp_kernel_gs_type_t;
 
+typedef struct mp_kernel_gs_send_param {
+    void *buf;
+    int size;
+    mp_reg_t *reg;
+} mp_kernel_gs_send_param_t;
+
+typedef struct mp_kernel_gs_wait_param {
+    mp_gs_wait_type_t type;
+    mp_gs_req_t req;
+} mp_kernel_gs_wait_param_t;
+
 struct mp_kernel_gs {
     mp_kernel_gs_type_t type;
 
@@ -217,6 +228,9 @@ struct mp_kernel_gs {
     // TODO: Add rindex
     uint32_t *sindex_d;
     uint32_t *windex_d;
+
+    mp_kernel_gs_send_param_t *send_params;
+    mp_kernel_gs_wait_param_t *wait_params;
 
     cudaGraphNode_t  begin_node;
     cudaGraphNode_t  end_node;

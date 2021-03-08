@@ -2589,6 +2589,20 @@ int mp_graph_setup(cudaGraph_t graph, int peer, uint32_t max_num_send, uint32_t 
         goto out;
     }
 
+    _gs->send_params = (mp_kernel_gs_send_param_t *)malloc(sizeof(mp_kernel_gs_send_param_t) * max_num_send);
+    if (!_gs->send_params) {
+        mp_dbg_msg("Cannot allocate _gs->send_params.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
+    _gs->wait_params = (mp_kernel_gs_wait_param_t *)malloc(sizeof(mp_kernel_gs_wait_param_t) * max_num_wait);
+    if (!_gs->wait_params) {
+        mp_dbg_msg("Cannot allocate _gs->wait_params.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
     cuda_result = cudaMalloc((void **)&max_num_d, sizeof(uint32_t) * 3);
     if (cuda_result != cudaSuccess) {
         mp_dbg_msg("Cannot allocate max_num_d: %s\n", cudaGetErrorName(cuda_result));
@@ -2689,6 +2703,12 @@ out:
 
             if (_gs->sdesc)
                 cudaFreeHost(_gs->sdesc);
+
+            if (_gs->wait_params)
+                free(_gs->wait_params);
+
+            if (_gs->send_params)
+                free(_gs->send_params);
 
             if (_gs->wait_nodes)
                 free(_gs->wait_nodes);
@@ -2820,7 +2840,7 @@ out:
     return ret;
 }
 
-int mp_graph_add_isend_node(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq)
+int mp_graph_add_isend_node(mp_kernel_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq)
 {
     int ret = 0;
 
@@ -2876,11 +2896,93 @@ int mp_graph_add_isend_node(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, si
         }
     }
 
+    gs->send_params[gs->sindex].buf = buf;
+    gs->send_params[gs->sindex].size = size;
+    gs->send_params[gs->sindex].reg = reg;
+
     gs->send_nodes[gs->sindex] = node;
+    *snode = node;
+    *sreq = gs->sindex;
+
     ++gs->sindex;
 
 out:
     // Cleanup the send node.
+    return ret;
+}
+
+int mp_graph_add_wait_node(mp_kernel_gs_t gs, mp_gs_req_t req, mp_gs_wait_type_t wait_type, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *wnode)
+{
+    int ret = 0;
+
+    cudaError_t cuda_result;
+
+    cudaGraphNode_t node;
+    cudaKernelNodeParams params;
+
+    void *args[3];
+
+    if (!gs->begin_node) {
+        mp_dbg_msg("mp_graph_begin must be called first.\n");
+        ret = EINVAL;
+        goto out;
+    }
+
+    params.func = (void *)mp::device::mlx5::wait_op_kernel;
+    params.gridDim = 1;
+    params.blockDim = 1;
+    params.sharedMemBytes = 0;
+
+    args[0] = (void *)gs->wdesc_d;
+    args[1] = (void *)gs->windex_d;
+    args[2] = (void *)gs->max_num_wait_d;
+
+    params.kernelParams = args;
+    params.extra = NULL;
+
+    if ((wait_type == MP_GS_WAIT_TYPE_SEND && req > gs->sindex)) {
+        mp_dbg_msg("req not found.\n");
+        ret = EINVAL;
+        goto out;
+    }
+
+    cuda_result = cudaGraphAddKernelNode(&node, gs->graph, dependencies, dep_size, &params);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Error in cudaGraphAddHostNode: %s\n", cudaGetErrorName(cuda_result));
+        ret = EINVAL;
+        goto out;
+    }
+
+    
+    if (gs->windex > 0) {
+        // We have previous wait node.
+        cuda_result = cudaGraphAddDependencies(gs->graph, &gs->wait_nodes[gs->windex - 1], &node, 1);
+        if (cuda_result != cudaSuccess) {
+            mp_dbg_msg("Error in cudaGraphAddDependencies from last wait_node: %s\n", cudaGetErrorName(cuda_result));
+            ret = EINVAL;
+            goto out;
+        }
+    }
+    else {
+        // This is the first wait node.
+        cuda_result = cudaGraphAddDependencies(gs->graph, &gs->begin_node, &node, 1);
+        if (cuda_result != cudaSuccess) {
+            mp_dbg_msg("Error in cudaGraphAddDependencies: %s\n", cudaGetErrorName(cuda_result));
+            ret = EINVAL;
+            goto out;
+        }
+    }
+
+    gs->wait_params[gs->windex].type = wait_type;
+    gs->wait_params[gs->windex].req = req;
+
+    gs->wait_nodes[gs->windex] = node;
+    *wnode = node;
+
+    ++gs->windex;
+
+out:
+    // Cleanup the wait node.
     return ret;
 }
 

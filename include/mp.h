@@ -213,6 +213,11 @@ int mp_desc_queue_post_on_stream(cudaStream_t stream, mp_desc_queue_t *dq, int f
  * Graph and CUDA-kernel related primitives
  */
 
+typedef enum mp_gs_wait_type {
+    MP_GS_WAIT_TYPE_SEND = 0,   // Wait on send request
+    MP_GS_WAIT_TYPE_RECV,       // Wait on recv request
+} mp_gs_wait_type_t;
+
 typedef struct mp_kernel_gs* mp_kernel_gs_t;
 typedef uint32_t mp_gs_req_t;
 
@@ -254,6 +259,9 @@ int mp_graph_end(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_si
 /**
  * \brief Create and add an mp-isend graph node on the graph.
  * \param gs - mp_kernel_gs_t object.
+ * \param buf - Send buffer.
+ * \param size - Data size to send.
+ * \param reg - mp_reg_t object for send.
  * \param dependencies - Dependencies for this mp-isend graph node. 
  * \param dep_size - Number of elements in `dependencies`.
  * \param snode - Return this mp-isend graph node.
@@ -261,7 +269,7 @@ int mp_graph_end(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_si
  *
  * \return MP_SUCCESS, MP_FAILURE
  */
-int mp_graph_add_isend_node(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq);
+int mp_graph_add_isend_node(mp_kernel_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq);
 
 /**
  * \brief Create and add an mp-irecv graph node on the graph.
@@ -279,13 +287,14 @@ int mp_graph_add_irecv_node(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, si
  * \brief Create and add an mp-wait graph node on the graph.
  * \param gs - mp_kernel_gs_t object.
  * \param req - gs request object to wait.
+ * \param wait_type - See mp_gs_wait_type_t.
  * \param dependencies - Dependencies for this mp-wait graph node. 
  * \param dep_size - Number of elements in `dependencies`.
  * \param wnode - Return this mp-wait graph node.
  *
  * \return MP_SUCCESS, MP_FAILURE
  */
-int mp_graph_add_wait_node(mp_kernel_gs_t gs, mp_gs_req_t req, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *wnode);
+int mp_graph_add_wait_node(mp_kernel_gs_t gs, mp_gs_req_t req, mp_gs_wait_type_t wait_type, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *wnode);
 
 
 /**
