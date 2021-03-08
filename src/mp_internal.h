@@ -194,21 +194,35 @@ typedef enum mp_kernel_gs_type {
 struct mp_kernel_gs {
     mp_kernel_gs_type_t type;
 
-    uint32_t max_num_sreq;
-    uint32_t max_num_rreq;
+    int peer;
+
+    uint32_t  max_num_send;
+    uint32_t *max_num_send_d;
+    uint32_t  max_num_recv;
+    uint32_t *max_num_recv_d;
+    uint32_t  max_num_wait;
+    uint32_t *max_num_wait_d;
 
     struct mp_request *sreq;
     struct mp_request *rreq;
 
     mp::mlx5::send_desc_t *sdesc;
     mp::mlx5::send_desc_t *sdesc_d;
+    // TODO: Add rdesc
     mp::mlx5::wait_desc_t *wdesc;
     mp::mlx5::wait_desc_t *wdesc_d;
 
-    uint32_t sindex;
-    uint32_t windex;
+    uint32_t  sindex;
+    uint32_t  windex;
+    // TODO: Add rindex
     uint32_t *sindex_d;
     uint32_t *windex_d;
+
+    cudaGraphNode_t  begin_node;
+    cudaGraphNode_t  end_node;
+    cudaGraphNode_t *send_nodes;
+    cudaGraphNode_t *recv_nodes;
+    cudaGraphNode_t *wait_nodes;
 
     union
     {

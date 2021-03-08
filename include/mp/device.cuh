@@ -75,6 +75,31 @@ namespace mp {
                 release(info.flag);
                 //__threadfence_system();
             }
+
+            __global__ void send_op_kernel(mp::mlx5::send_desc_t *desc, uint32_t *index, uint32_t *max_num)
+            {
+                uint32_t idx = *index;
+                uint32_t mn = *max_num;
+
+                // When creating a graph, we add dependency with the previous send node.
+                // Hence, we won't have race of two threads updating index.
+                *index = (idx + 1) % mn;
+
+                mp::device::mlx5::send(desc[idx]);
+            }
+
+            __global__ void wait_op_kernel(mp::mlx5::wait_desc_t *desc, uint32_t *index, uint32_t *max_num)
+            {
+                uint32_t idx = *index;
+                uint32_t mn = *max_num;
+
+                // When creating a graph, we add dependency with the previous wait node.
+                // Hence, we won't have race of two threads updating index.
+                *index = (idx + 1) % mn;
+
+                mp::device::mlx5::wait(desc[idx]);
+                mp::device::mlx5::signal(desc[idx]);
+            }
         }
 
     } // device

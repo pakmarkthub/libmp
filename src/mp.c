@@ -2517,13 +2517,29 @@ int mp_query_param(mp_param_t param, int *value)
 }
 
 
-int mp_graph_setup(cudaGraph_t graph, uint32_t max_num_send, uint32_t max_num_recv, mp_kernel_gs_t *gs)
+int mp_graph_setup(cudaGraph_t graph, int peer, uint32_t max_num_send, uint32_t max_num_recv, mp_kernel_gs_t *gs)
 {
     int ret = 0;
+
+    uint32_t max_num_wait = max_num_send + max_num_recv;
+    uint32_t *max_num_d = NULL;
 
     cudaError_t cuda_result;
 
     struct mp_kernel_gs *_gs = NULL;
+
+    if (peer < 0 || peer >= client_count) {
+        mp_dbg_msg("peer %d is not registered.\n", peer);
+        ret = EINVAL;
+        goto out;
+    }
+
+    if (max_num_wait < max_num_send || max_num_wait < max_num_recv) {
+        // Encountered wraparound
+        mp_dbg_msg("max_num_send + max_num_recv is too large.\n");
+        ret = EINVAL;
+        goto out;
+    }
 
     if (!graph) {
         mp_dbg_msg("graph cannot be NULL.\n");
@@ -2552,57 +2568,115 @@ int mp_graph_setup(cudaGraph_t graph, uint32_t max_num_send, uint32_t max_num_re
         goto out;
     }
 
+    _gs->send_nodes = (cudaGraphNode_t *)malloc(sizeof(cudaGraphNode_t) * max_num_send);
+    if (!_gs->send_nodes) {
+        mp_dbg_msg("Cannot allocate _gs->send_nodes.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
+    _gs->recv_nodes = (cudaGraphNode_t *)malloc(sizeof(cudaGraphNode_t) * max_num_recv);
+    if (!_gs->recv_nodes) {
+        mp_dbg_msg("Cannot allocate _gs->recv_nodes.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
+    _gs->wait_nodes = (cudaGraphNode_t *)malloc(sizeof(cudaGraphNode_t) * max_num_wait);
+    if (!_gs->wait_nodes) {
+        mp_dbg_msg("Cannot allocate _gs->wait_nodes.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
+    cuda_result = cudaMalloc((void **)&max_num_d, sizeof(uint32_t) * 3);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Cannot allocate max_num_d: %s\n", cudaGetErrorName(cuda_result));
+        ret = ENOMEM;
+        goto out;
+    }
+
     cuda_result = cudaHostAlloc((void **)&_gs->sdesc, max_num_send * sizeof(mp::mlx5::send_desc_t), cudaHostAllocPortable | cudaHostAllocMapped);
     if (cuda_result != cudaSuccess) {
-        mp_dbg_msg("Cannot allocate _gs->sdesc.\n");
+        mp_dbg_msg("Cannot allocate _gs->sdesc: %s\n", cudaGetErrorName(cuda_result));
         ret = ENOMEM;
         goto out;
     }
     memset((void *)_gs->sdesc, 0, max_num_send * sizeof(mp::mlx5::send_desc_t));
     cuda_result = cudaHostGetDevicePointer((void **)&_gs->sdesc_d, _gs->sdesc, 0);
     if (cuda_result != cudaSuccess) {
-        mp_dbg_msg("Cannot get device pointer of _gs->sdesc_d.\n");
+        mp_dbg_msg("Cannot get device pointer of _gs->sdesc_d: %s\n", cudaGetErrorName(cuda_result));
         ret = EFAULT;
         goto out;
     }
 
-    cuda_result = cudaHostAlloc((void **)&_gs->wdesc, max_num_send * sizeof(mp::mlx5::wait_desc_t), cudaHostAllocPortable | cudaHostAllocMapped);
+    // TODO: Add rdesc and rindex_d allocation
+
+    cuda_result = cudaHostAlloc((void **)&_gs->wdesc, max_num_wait * sizeof(mp::mlx5::wait_desc_t), cudaHostAllocPortable | cudaHostAllocMapped);
     if (cuda_result != cudaSuccess) {
-        mp_dbg_msg("Cannot allocate _gs->wdesc.\n");
+        mp_dbg_msg("Cannot allocate _gs->wdesc: %s\n", cudaGetErrorName(cuda_result));
         ret = ENOMEM;
         goto out;
     }
-    memset((void *)_gs->wdesc, 0, max_num_send * sizeof(mp::mlx5::wait_desc_t));
+    memset((void *)_gs->wdesc, 0, max_num_wait * sizeof(mp::mlx5::wait_desc_t));
     cuda_result = cudaHostGetDevicePointer((void **)&_gs->wdesc_d, _gs->wdesc, 0);
     if (cuda_result != cudaSuccess) {
-        mp_dbg_msg("Cannot get device pointer of _gs->wdesc.\n");
+        mp_dbg_msg("Cannot get device pointer of _gs->wdesc: %s\n", cudaGetErrorName(cuda_result));
         ret = EFAULT;
         goto out;
     }
 
     cuda_result = cudaMalloc((void **)&_gs->sindex_d, sizeof(uint32_t));
     if (cuda_result != cudaSuccess) {
-        mp_dbg_msg("Cannot allocate _gs->sindex_d.\n");
+        mp_dbg_msg("Cannot allocate _gs->sindex_d: %s\n", cudaGetErrorName(cuda_result));
         ret = ENOMEM;
         goto out;
     }
 
     cuda_result = cudaMalloc((void **)&_gs->windex_d, sizeof(uint32_t));
     if (cuda_result != cudaSuccess) {
-        mp_dbg_msg("Cannot allocate _gs->windex_d.\n");
+        mp_dbg_msg("Cannot allocate _gs->windex_d: %s\n", cudaGetErrorName(cuda_result));
+        ret = ENOMEM;
+        goto out;
+    }
+
+    cuda_result = cudaMemcpy(&max_num_d[0], &max_num_send, sizeof(uint32_t), cudaMemcpyHostToDevice);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Error in cudaMemcpy max_num_send: %s\n", cudaGetErrorName(cuda_result));
+        ret = ENOMEM;
+        goto out;
+    }
+
+    cuda_result = cudaMemcpy(&max_num_d[1], &max_num_recv, sizeof(uint32_t), cudaMemcpyHostToDevice);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Error in cudaMemcpy max_num_recv: %s\n", cudaGetErrorName(cuda_result));
+        ret = ENOMEM;
+        goto out;
+    }
+
+    cuda_result = cudaMemcpy(&max_num_d[2], &max_num_wait, sizeof(uint32_t), cudaMemcpyHostToDevice);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Error in cudaMemcpy max_num_wait: %s\n", cudaGetErrorName(cuda_result));
         ret = ENOMEM;
         goto out;
     }
 
     _gs->type = MP_KERNEL_GS_TYPE_GRAPH;
-    _gs->max_num_sreq = max_num_send;
-    _gs->max_num_rreq = max_num_recv;
+    _gs->max_num_send = max_num_send;
+    _gs->max_num_recv = max_num_recv;
+    _gs->max_num_wait = max_num_wait;
+    _gs->max_num_send_d = &max_num_d[0];
+    _gs->max_num_recv_d = &max_num_d[1];
+    _gs->max_num_wait_d = &max_num_d[2];
     _gs->graph = graph;
 
     *gs = _gs;
 
 out:
     if (ret) {
+        if (max_num_d)
+            cudaFree(max_num_d);
+
         if (_gs) {
             if (_gs->windex_d)
                 cudaFree(_gs->windex_d);
@@ -2616,6 +2690,15 @@ out:
             if (_gs->sdesc)
                 cudaFreeHost(_gs->sdesc);
 
+            if (_gs->wait_nodes)
+                free(_gs->wait_nodes);
+
+            if (_gs->recv_nodes)
+                free(_gs->recv_nodes);
+
+            if (_gs->send_nodes)
+                free(_gs->send_nodes);
+
             if (_gs->rreq)
                 free(_gs->rreq);
             
@@ -2628,6 +2711,176 @@ out:
         *gs = NULL;
     }
 
+    return ret;
+}
+
+static void gs_graph_begin(void *data)
+{
+    // TODO: Implement this.
+    mp_err_msg("Not yet implemented!\n");
+}
+
+int mp_graph_begin(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size)
+{
+    int ret = 0;
+
+    cudaError_t cuda_result;
+
+    cudaGraphNode_t node;
+    cudaHostNodeParams params;
+
+    if (gs->begin_node) {
+        mp_dbg_msg("mp_graph_begin has already been called.\n");
+        ret = EINVAL;
+        goto out;
+    }
+
+    params.fn = gs_graph_begin;
+    params.userData = gs;
+
+    cuda_result = cudaGraphAddHostNode(&node, gs->graph, dependencies, dep_size, &params);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Error in cudaGraphAddHostNode: %s\n", cudaGetErrorName(cuda_result));
+        ret = EINVAL;
+        goto out;
+    }
+
+    gs->begin_node = node;
+
+out:
+    return ret;
+}
+
+static void gs_graph_end(void *data)
+{
+    // TODO: Implement this.
+    mp_err_msg("Not yet implemented!\n");
+}
+
+int mp_graph_end(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size)
+{
+    int ret = 0;
+
+    cudaError_t cuda_result;
+
+    cudaGraphNode_t node;
+    cudaHostNodeParams params;
+
+    if (gs->end_node) {
+        mp_dbg_msg("mp_graph_end has already been called.\n");
+        ret = EINVAL;
+        goto out;
+    }
+
+    if (!gs->begin_node) {
+        mp_dbg_msg("mp_graph_begin must be called first.\n");
+        ret = EINVAL;
+        goto out;
+    }
+
+    params.fn = gs_graph_end;
+    params.userData = gs;
+
+    cuda_result = cudaGraphAddHostNode(&node, gs->graph, dependencies, dep_size, &params);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Error in cudaGraphAddHostNode: %s\n", cudaGetErrorName(cuda_result));
+        ret = EINVAL;
+        goto out;
+    }
+
+    cuda_result = cudaGraphAddDependencies(gs->graph, &gs->begin_node, &node, 1);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Error in cudaGraphAddDependencies from begin_node: %s\n", cudaGetErrorName(cuda_result));
+        ret = EINVAL;
+        goto out;
+    }
+
+    if (gs->sindex > 0) {
+        cuda_result = cudaGraphAddDependencies(gs->graph, &gs->send_nodes[gs->sindex - 1], &node, 1);
+        if (cuda_result != cudaSuccess) {
+            mp_dbg_msg("Error in cudaGraphAddDependencies from last send_node: %s\n", cudaGetErrorName(cuda_result));
+            ret = EINVAL;
+            goto out;
+        }
+    }
+
+    if (gs->windex > 0) {
+        cuda_result = cudaGraphAddDependencies(gs->graph, &gs->wait_nodes[gs->windex - 1], &node, 1);
+        if (cuda_result != cudaSuccess) {
+            mp_dbg_msg("Error in cudaGraphAddDependencies from last wait_node: %s\n", cudaGetErrorName(cuda_result));
+            ret = EINVAL;
+            goto out;
+        }
+    }
+        
+    gs->end_node = node;
+
+out:
+    // TODO: Clean up end_node
+    return ret;
+}
+
+int mp_graph_add_isend_node(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq)
+{
+    int ret = 0;
+
+    cudaError_t cuda_result;
+
+    cudaGraphNode_t node;
+    cudaKernelNodeParams params;
+
+    void *args[3];
+
+    if (!gs->begin_node) {
+        mp_dbg_msg("mp_graph_begin must be called first.\n");
+        ret = EINVAL;
+        goto out;
+    }
+
+    params.func = (void *)mp::device::mlx5::send_op_kernel;
+    params.gridDim = 1;
+    params.blockDim = 1;
+    params.sharedMemBytes = 0;
+
+    args[0] = (void *)gs->sdesc_d;
+    args[1] = (void *)gs->sindex_d;
+    args[2] = (void *)gs->max_num_send_d;
+
+    params.kernelParams = args;
+    params.extra = NULL;
+
+    cuda_result = cudaGraphAddKernelNode(&node, gs->graph, dependencies, dep_size, &params);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Error in cudaGraphAddHostNode: %s\n", cudaGetErrorName(cuda_result));
+        ret = EINVAL;
+        goto out;
+    }
+
+    
+    if (gs->sindex > 0) {
+        // We have previous send node.
+        cuda_result = cudaGraphAddDependencies(gs->graph, &gs->send_nodes[gs->sindex - 1], &node, 1);
+        if (cuda_result != cudaSuccess) {
+            mp_dbg_msg("Error in cudaGraphAddDependencies from last send_node: %s\n", cudaGetErrorName(cuda_result));
+            ret = EINVAL;
+            goto out;
+        }
+    }
+    else {
+        // This is the first send node.
+        cuda_result = cudaGraphAddDependencies(gs->graph, &gs->begin_node, &node, 1);
+        if (cuda_result != cudaSuccess) {
+            mp_dbg_msg("Error in cudaGraphAddDependencies: %s\n", cudaGetErrorName(cuda_result));
+            ret = EINVAL;
+            goto out;
+        }
+    }
+
+    gs->send_nodes[gs->sindex] = node;
+    ++gs->sindex;
+
+out:
+    // Cleanup the send node.
     return ret;
 }
 
