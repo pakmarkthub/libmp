@@ -191,6 +191,16 @@ typedef enum mp_kernel_gs_type {
     MP_KERNEL_GS_TYPE_STREAM;
 } mp_kernel_gs_type_t;
 
+enum {
+    MP_GS_REQ_TYPE_SEND = 0, 
+    MP_GS_REQ_TYPE_RECV,     
+};
+
+struct mp_gs_req {
+    uint32_t type,
+    uint32_t index
+};
+
 typedef struct mp_kernel_gs_send_param {
     void *buf;
     int size;
@@ -199,7 +209,7 @@ typedef struct mp_kernel_gs_send_param {
 
 typedef struct mp_kernel_gs_wait_param {
     mp_gs_wait_type_t type;
-    mp_gs_req_t req;
+    struct mp_gs_req req;
 } mp_kernel_gs_wait_param_t;
 
 struct mp_kernel_gs {

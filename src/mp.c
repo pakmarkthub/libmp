@@ -2849,6 +2849,8 @@ int mp_graph_add_isend_node(mp_kernel_gs_t gs, void *buf, int size, mp_reg_t *re
     cudaGraphNode_t node;
     cudaKernelNodeParams params;
 
+    struct mp_gs_req _sreq;
+
     void *args[3];
 
     if (!gs->begin_node) {
@@ -2902,7 +2904,10 @@ int mp_graph_add_isend_node(mp_kernel_gs_t gs, void *buf, int size, mp_reg_t *re
 
     gs->send_nodes[gs->sindex] = node;
     *snode = node;
-    *sreq = gs->sindex;
+
+    _sreq.type = MP_GS_REQ_TYPE_SEND;
+    _sreq.index = gs->sindex;
+    *sreq = (mp_gs_req_t)_sreq;
 
     ++gs->sindex;
 
@@ -2911,7 +2916,7 @@ out:
     return ret;
 }
 
-int mp_graph_add_wait_node(mp_kernel_gs_t gs, mp_gs_req_t req, mp_gs_wait_type_t wait_type, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *wnode)
+int mp_graph_add_wait_node(mp_kernel_gs_t gs, mp_gs_req_t req, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *wnode)
 {
     int ret = 0;
 
@@ -2919,6 +2924,8 @@ int mp_graph_add_wait_node(mp_kernel_gs_t gs, mp_gs_req_t req, mp_gs_wait_type_t
 
     cudaGraphNode_t node;
     cudaKernelNodeParams params;
+
+    struct mp_gs_req _req = (struct mp_gs_req)req;
 
     void *args[3];
 
@@ -2940,7 +2947,8 @@ int mp_graph_add_wait_node(mp_kernel_gs_t gs, mp_gs_req_t req, mp_gs_wait_type_t
     params.kernelParams = args;
     params.extra = NULL;
 
-    if ((wait_type == MP_GS_WAIT_TYPE_SEND && req > gs->sindex)) {
+    if ((_req.type == MP_GS_REQ_TYPE_SEND && _req.index > gs->sindex) || _req.type == MP_GS_REQ_TYPE_RECV) {
+        // Waiting on recv is not supported yet.
         mp_dbg_msg("req not found.\n");
         ret = EINVAL;
         goto out;
@@ -2973,8 +2981,7 @@ int mp_graph_add_wait_node(mp_kernel_gs_t gs, mp_gs_req_t req, mp_gs_wait_type_t
         }
     }
 
-    gs->wait_params[gs->windex].type = wait_type;
-    gs->wait_params[gs->windex].req = req;
+    gs->wait_params[gs->windex].req = _req;
 
     gs->wait_nodes[gs->windex] = node;
     *wnode = node;
