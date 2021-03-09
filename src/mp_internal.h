@@ -201,11 +201,11 @@ struct mp_gs_req {
     uint32_t index
 };
 
-typedef struct mp_kernel_gs_send_param {
+typedef struct mp_kernel_gs_sr_param {
     void *buf;
     int size;
     mp_reg_t *reg;
-} mp_kernel_gs_send_param_t;
+} mp_kernel_gs_sr_param_t;
 
 typedef struct mp_kernel_gs_wait_param {
     struct mp_gs_req req;
@@ -234,12 +234,14 @@ struct mp_kernel_gs {
     mp::mlx5::wait_desc_t *wdesc_d;
 
     uint32_t  sindex;
+    uint32_t  rindex;
     uint32_t  windex;
-    // TODO: Add rindex
     uint32_t *sindex_d;
+    uint32_t *rindex_d;
     uint32_t *windex_d;
 
-    mp_kernel_gs_send_param_t *send_params;
+    mp_kernel_gs_sr_param_t *send_params;
+    mp_kernel_gs_sr_param_t *recv_params;
     mp_kernel_gs_wait_param_t *wait_params;
 
     cudaGraphNode_t  begin_node;

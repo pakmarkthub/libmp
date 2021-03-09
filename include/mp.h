@@ -269,6 +269,9 @@ int mp_graph_add_isend_node(mp_kernel_gs_t gs, void *buf, int size, mp_reg_t *re
 /**
  * \brief Create and add an mp-irecv graph node on the graph.
  * \param gs - mp_kernel_gs_t object.
+ * \param buf - Recv buffer.
+ * \param size - Data size to recv.
+ * \param reg - mp_reg_t object for recv.
  * \param dependencies - Dependencies for this mp-irecv graph node. 
  * \param dep_size - Number of elements in `dependencies`.
  * \param rnode - Return this mp-irecv graph node.
@@ -276,7 +279,7 @@ int mp_graph_add_isend_node(mp_kernel_gs_t gs, void *buf, int size, mp_reg_t *re
  *
  * \return MP_SUCCESS, MP_FAILURE
  */
-int mp_graph_add_irecv_node(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *rnode, mp_gs_req_t *rreq);
+int mp_graph_add_irecv_node(mp_kernel_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *rnode, mp_gs_req_t *rreq);
 
 /**
  * \brief Create and add an mp-wait graph node on the graph.
