@@ -254,6 +254,7 @@ int mp_gs_add_end_node(mp_gs_t gs, cudaGraph_t graph, cudaGraphNode_t *dependenc
  * \param buf - Send buffer.
  * \param size - Data size to send.
  * \param reg - mp_reg_t object for send.
+ * \param graph - graph to add this node to.
  * \param dependencies - Dependencies for this mp-isend graph node. 
  * \param dep_size - Number of elements in `dependencies`.
  * \param snode - Return this mp-isend graph node.
@@ -261,7 +262,7 @@ int mp_gs_add_end_node(mp_gs_t gs, cudaGraph_t graph, cudaGraphNode_t *dependenc
  *
  * \return MP_SUCCESS, MP_FAILURE
  */
-int mp_graph_add_isend_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq);
+int mp_gs_add_isend_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq);
 
 /**
  * \brief Create and add an mp-irecv graph node on the graph.
@@ -269,6 +270,7 @@ int mp_graph_add_isend_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cuda
  * \param buf - Recv buffer.
  * \param size - Data size to recv.
  * \param reg - mp_reg_t object for recv.
+ * \param graph - graph to add this node to.
  * \param dependencies - Dependencies for this mp-irecv graph node. 
  * \param dep_size - Number of elements in `dependencies`.
  * \param rnode - Return this mp-irecv graph node.
@@ -276,19 +278,20 @@ int mp_graph_add_isend_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cuda
  *
  * \return MP_SUCCESS, MP_FAILURE
  */
-int mp_graph_add_irecv_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *rnode, mp_gs_req_t *rreq);
+int mp_gs_add_irecv_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *rnode, mp_gs_req_t *rreq);
 
 /**
  * \brief Create and add an mp-wait graph node on the graph.
  * \param gs - mp_gs_t object.
  * \param req - gs request object to wait.
+ * \param graph - graph to add this node to.
  * \param dependencies - Dependencies for this mp-wait graph node. 
  * \param dep_size - Number of elements in `dependencies`.
  * \param wnode - Return this mp-wait graph node.
  *
  * \return MP_SUCCESS, MP_FAILURE
  */
-int mp_graph_add_wait_node(mp_gs_t gs, mp_gs_req_t req, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *wnode);
+int mp_gs_add_wait_node(mp_gs_t gs, mp_gs_req_t req, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *wnode);
 
 
 /**
