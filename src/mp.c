@@ -2734,7 +2734,7 @@ out:
     return ret;
 }
 
-static void gs_graph_begin(void *data)
+static void gs_graph_start(void *data)
 {
     int status = 0;
 
@@ -2789,32 +2789,34 @@ out:
     return;
 }
 
-int mp_graph_begin(mp_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size)
+int mp_gs_add_start_node(mp_gs_t gs, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *node)
 {
     int ret = 0;
 
     cudaError_t cuda_result;
 
-    cudaGraphNode_t node;
+    cudaGraphNode_t _node;
     cudaHostNodeParams params;
 
-    if (gs->begin_node) {
-        mp_dbg_msg("mp_graph_begin has already been called.\n");
+    if (gs->start_node) {
+        mp_dbg_msg("mp_gs_add_start_node has already been called.\n");
         ret = EINVAL;
         goto out;
     }
 
-    params.fn = gs_graph_begin;
+    params.fn = gs_graph_start;
     params.userData = gs;
 
-    cuda_result = cudaGraphAddHostNode(&node, gs->graph, dependencies, dep_size, &params);
+    cuda_result = cudaGraphAddHostNode(&_node, graph, dependencies, dep_size, &params);
     if (cuda_result != cudaSuccess) {
         mp_dbg_msg("Error in cudaGraphAddHostNode: %s\n", cudaGetErrorName(cuda_result));
         ret = EINVAL;
         goto out;
     }
 
-    gs->begin_node = node;
+    gs->start_node = node;
+
+    *node = _node;
 
 out:
     return ret;
@@ -2836,23 +2838,23 @@ out:
     return;
 }
 
-int mp_graph_end(mp_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size)
+int mp_gs_add_end_node(mp_gs_t gs, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *node)
 {
     int ret = 0;
 
     cudaError_t cuda_result;
 
-    cudaGraphNode_t node;
+    cudaGraphNode_t _node;
     cudaHostNodeParams params;
 
     if (gs->end_node) {
-        mp_dbg_msg("mp_graph_end has already been called.\n");
+        mp_dbg_msg("mp_gs_add_end_node has already been called.\n");
         ret = EINVAL;
         goto out;
     }
 
-    if (!gs->begin_node) {
-        mp_dbg_msg("mp_graph_begin must be called first.\n");
+    if (!gs->start_node) {
+        mp_dbg_msg("mp_gs_add_start_node must be called first.\n");
         ret = EINVAL;
         goto out;
     }
@@ -2860,42 +2862,18 @@ int mp_graph_end(mp_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size)
     params.fn = gs_graph_end;
     params.userData = gs;
 
-    cuda_result = cudaGraphAddHostNode(&node, gs->graph, dependencies, dep_size, &params);
+    cuda_result = cudaGraphAddHostNode(&_node, graph, dependencies, dep_size, &params);
     if (cuda_result != cudaSuccess) {
         mp_dbg_msg("Error in cudaGraphAddHostNode: %s\n", cudaGetErrorName(cuda_result));
         ret = EINVAL;
         goto out;
     }
 
-    cuda_result = cudaGraphAddDependencies(gs->graph, &gs->begin_node, &node, 1);
-    if (cuda_result != cudaSuccess) {
-        mp_dbg_msg("Error in cudaGraphAddDependencies from begin_node: %s\n", cudaGetErrorName(cuda_result));
-        ret = EINVAL;
-        goto out;
-    }
-
-    if (gs->sindex > 0) {
-        cuda_result = cudaGraphAddDependencies(gs->graph, &gs->send_nodes[gs->sindex - 1], &node, 1);
-        if (cuda_result != cudaSuccess) {
-            mp_dbg_msg("Error in cudaGraphAddDependencies from last send_node: %s\n", cudaGetErrorName(cuda_result));
-            ret = EINVAL;
-            goto out;
-        }
-    }
-
-    if (gs->windex > 0) {
-        cuda_result = cudaGraphAddDependencies(gs->graph, &gs->wait_nodes[gs->windex - 1], &node, 1);
-        if (cuda_result != cudaSuccess) {
-            mp_dbg_msg("Error in cudaGraphAddDependencies from last wait_node: %s\n", cudaGetErrorName(cuda_result));
-            ret = EINVAL;
-            goto out;
-        }
-    }
-        
     gs->end_node = node;
 
+    *node = _node;
+
 out:
-    // TODO: Clean up end_node
     return ret;
 }
 

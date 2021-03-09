@@ -236,7 +236,7 @@ struct mp_kernel_gs {
     mp_gs_sr_param_t *recv_params;
     mp_gs_wait_param_t *wait_params;
 
-    cudaGraphNode_t  begin_node;
+    cudaGraphNode_t  start_node;
     cudaGraphNode_t  end_node;
     cudaGraphNode_t *send_nodes;
     cudaGraphNode_t *recv_nodes;

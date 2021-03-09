@@ -223,32 +223,30 @@ typedef uint64_t mp_gs_req_t;
  * \param max_num_send - Maximum number of in-flight send requests.
  * \param max_num_recv - Maximum number of in-flight receive requests.
  * \param gs - Return mp_gs_t object to be used with other mp_graph_* API.
- *
- * \return MP_SUCCESS, MP_FAILURE
  */
 int mp_gs_alloc(int peer, uint32_t max_num_send, uint32_t max_num_recv, mp_gs_t *gs);
 
 /**
- * \brief Create a graph intent for mp communication preparation. This function must be called before mp_graph_add_*_node.
+ * \brief Create and add a graph node for mp communication preparation. This function must be called before mp_gs_add_*_node.
  * \param gs - mp_gs_t object.
+ * \param graph - graph to add this node to.
  * \param dependencies - Graph nodes that must be executed before launching the preparation.
  * \param dep_size - Number of elements in `dependencies`.
- *
- * \return MP_SUCCESS, MP_FAILURE
+ * \param node - Return this start node.
  */
-int mp_graph_begin(mp_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size);
+int mp_gs_add_start_node(mp_gs_t gs, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *node);
 
 /**
- * \brief Create a graph intent for mp communication wrapup.
- *      mp_graph_add_*_node cannot be used after this function. This function must
- *      be called if `mp_graph_begin` is called.
+ * \brief Create and add a graph node for mp communication cleanup.
+ *      mp_gs_add_*_node cannot be called after this function. This function must
+ *      be called iff `mp_gs_add_start_node` has been called.
  * \param gs - mp_gs_t object.
+ * \param graph - graph to add this node to.
  * \param dependencies - Graph nodes that must be executed before the wrapup. 
  * \param dep_size - Number of elements in `dependencies`.
- *
- * \return MP_SUCCESS, MP_FAILURE
+ * \param node - Return this start node.
  */
-int mp_graph_end(mp_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size);
+int mp_gs_add_end_node(mp_gs_t gs, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *node);
 
 /**
  * \brief Create and add an mp-isend graph node on the graph.
