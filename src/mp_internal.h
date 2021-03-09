@@ -186,11 +186,6 @@ struct mp_request {
     struct mp_request *prev;
 }; 
 
-typedef enum mp_kernel_gs_type {
-    MP_KERNEL_GS_TYPE_GRAPH;
-    MP_KERNEL_GS_TYPE_STREAM;
-} mp_kernel_gs_type_t;
-
 typedef enum mp_gs_req_type {
     MP_GS_REQ_TYPE_SEND = 0, 
     MP_GS_REQ_TYPE_RECV,     
@@ -201,19 +196,17 @@ struct mp_gs_req {
     uint32_t index
 };
 
-typedef struct mp_kernel_gs_sr_param {
+typedef struct mp_gs_sr_param {
     void *buf;
     int size;
     mp_reg_t *reg;
-} mp_kernel_gs_sr_param_t;
+} mp_gs_sr_param_t;
 
-typedef struct mp_kernel_gs_wait_param {
+typedef struct mp_gs_wait_param {
     struct mp_gs_req req;
-} mp_kernel_gs_wait_param_t;
+} mp_gs_wait_param_t;
 
 struct mp_kernel_gs {
-    mp_kernel_gs_type_t type;
-
     int peer;
 
     uint32_t  max_num_send;
@@ -229,7 +222,6 @@ struct mp_kernel_gs {
 
     mp::mlx5::send_desc_t *sdesc;
     mp::mlx5::send_desc_t *sdesc_d;
-    // TODO: Add rdesc
     mp::mlx5::wait_desc_t *wdesc;
     mp::mlx5::wait_desc_t *wdesc_d;
 
@@ -240,21 +232,15 @@ struct mp_kernel_gs {
     uint32_t *rindex_d;
     uint32_t *windex_d;
 
-    mp_kernel_gs_sr_param_t *send_params;
-    mp_kernel_gs_sr_param_t *recv_params;
-    mp_kernel_gs_wait_param_t *wait_params;
+    mp_gs_sr_param_t *send_params;
+    mp_gs_sr_param_t *recv_params;
+    mp_gs_wait_param_t *wait_params;
 
     cudaGraphNode_t  begin_node;
     cudaGraphNode_t  end_node;
     cudaGraphNode_t *send_nodes;
     cudaGraphNode_t *recv_nodes;
     cudaGraphNode_t *wait_nodes;
-
-    union
-    {
-        cudaGraph_t graph;
-        cudaStream_t stream;
-    };
 };
 
 struct mp_window {

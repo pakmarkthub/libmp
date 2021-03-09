@@ -2517,7 +2517,7 @@ int mp_query_param(mp_param_t param, int *value)
 }
 
 
-int mp_graph_setup(cudaGraph_t graph, int peer, uint32_t max_num_send, uint32_t max_num_recv, mp_kernel_gs_t *gs)
+int mp_graph_alloc(int peer, uint32_t max_num_send, uint32_t max_num_recv, mp_gs_t *gs)
 {
     int ret = 0;
 
@@ -2526,7 +2526,7 @@ int mp_graph_setup(cudaGraph_t graph, int peer, uint32_t max_num_send, uint32_t 
 
     cudaError_t cuda_result;
 
-    struct mp_kernel_gs *_gs = NULL;
+    struct mp_gs *_gs = NULL;
 
     if (peer < 0 || peer >= client_count) {
         mp_dbg_msg("peer %d is not registered.\n", peer);
@@ -2541,13 +2541,7 @@ int mp_graph_setup(cudaGraph_t graph, int peer, uint32_t max_num_send, uint32_t 
         goto out;
     }
 
-    if (!graph) {
-        mp_dbg_msg("graph cannot be NULL.\n");
-        ret = EINVAL;
-        goto out;
-    }
-
-    _gs = (struct mp_kernel_gs *)calloc(1, sizeof(struct mp_kernel_gs));
+    _gs = (struct mp_gs *)calloc(1, sizeof(struct mp_gs));
     if (!_gs) {
         mp_dbg_msg("Cannot allocate _gs.\n");
         ret = ENOMEM;
@@ -2589,14 +2583,14 @@ int mp_graph_setup(cudaGraph_t graph, int peer, uint32_t max_num_send, uint32_t 
         goto out;
     }
 
-    _gs->send_params = (mp_kernel_gs_send_param_t *)malloc(sizeof(mp_kernel_gs_send_param_t) * max_num_send);
+    _gs->send_params = (mp_gs_send_param_t *)malloc(sizeof(mp_gs_send_param_t) * max_num_send);
     if (!_gs->send_params) {
         mp_dbg_msg("Cannot allocate _gs->send_params.\n");
         ret = ENOMEM;
         goto out;
     }
 
-    _gs->wait_params = (mp_kernel_gs_wait_param_t *)malloc(sizeof(mp_kernel_gs_wait_param_t) * max_num_wait);
+    _gs->wait_params = (mp_gs_wait_param_t *)malloc(sizeof(mp_gs_wait_param_t) * max_num_wait);
     if (!_gs->wait_params) {
         mp_dbg_msg("Cannot allocate _gs->wait_params.\n");
         ret = ENOMEM;
@@ -2680,14 +2674,12 @@ int mp_graph_setup(cudaGraph_t graph, int peer, uint32_t max_num_send, uint32_t 
         goto out;
     }
 
-    _gs->type = MP_KERNEL_GS_TYPE_GRAPH;
     _gs->max_num_send = max_num_send;
     _gs->max_num_recv = max_num_recv;
     _gs->max_num_wait = max_num_wait;
     _gs->max_num_send_d = &max_num_d[0];
     _gs->max_num_recv_d = &max_num_d[1];
     _gs->max_num_wait_d = &max_num_d[2];
-    _gs->graph = graph;
 
     *gs = _gs;
 
@@ -2746,11 +2738,11 @@ static void gs_graph_begin(void *data)
 {
     int status = 0;
 
-    struct mp_kernel_gs *gs = (struct mp_kernel_gs *)data;
+    struct mp_gs *gs = (struct mp_gs *)data;
 
-    mp_kernel_gs_sr_param_t *sparam;
-    mp_kernel_gs_sr_param_t *rparam;
-    mp_kernel_gs_wait_param_t *wparam;
+    mp_gs_sr_param_t *sparam;
+    mp_gs_sr_param_t *rparam;
+    mp_gs_wait_param_t *wparam;
 
     mp_request_t *req;
 
@@ -2797,7 +2789,7 @@ out:
     return;
 }
 
-int mp_graph_begin(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size)
+int mp_graph_begin(mp_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size)
 {
     int ret = 0;
 
@@ -2832,7 +2824,7 @@ static void gs_graph_end(void *data)
 {
     int status = 0;
 
-    struct mp_kernel_gs *gs = (struct mp_kernel_gs *)data;
+    struct mp_gs *gs = (struct mp_gs *)data;
 
     status = mp_wait_all(gs->sindex, gs->sreq);
     if (status) {
@@ -2844,7 +2836,7 @@ out:
     return;
 }
 
-int mp_graph_end(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size)
+int mp_graph_end(mp_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size)
 {
     int ret = 0;
 
@@ -2907,7 +2899,7 @@ out:
     return ret;
 }
 
-int mp_graph_add_isend_node(mp_kernel_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq)
+int mp_graph_add_isend_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq)
 {
     int ret = 0;
 
@@ -2988,7 +2980,7 @@ out:
     return ret;
 }
 
-int mp_graph_add_irecv_node(mp_kernel_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *rnode, mp_gs_req_t *rreq)
+int mp_graph_add_irecv_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *rnode, mp_gs_req_t *rreq)
 {
     int ret = 0;
 
@@ -3055,7 +3047,7 @@ out:
     return ret;
 }
 
-int mp_graph_add_wait_node(mp_kernel_gs_t gs, mp_gs_req_t req, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *wnode)
+int mp_graph_add_wait_node(mp_gs_t gs, mp_gs_req_t req, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *wnode)
 {
     int ret = 0;
 
