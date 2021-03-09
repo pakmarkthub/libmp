@@ -2898,6 +2898,12 @@ int mp_graph_add_isend_node(mp_kernel_gs_t gs, void *buf, int size, mp_reg_t *re
         goto out;
     }
 
+    if (gs->sindex >= gs->max_num_send) {
+        mp_dbg_msg("No more slot to hold this in-flight send.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
     params.func = (void *)mp::device::mlx5::send_op_kernel;
     params.gridDim = 1;
     params.blockDim = 1;
@@ -2971,6 +2977,12 @@ int mp_graph_add_wait_node(mp_kernel_gs_t gs, mp_gs_req_t req, cudaGraphNode_t *
     if (!gs->begin_node) {
         mp_dbg_msg("mp_graph_begin must be called first.\n");
         ret = EINVAL;
+        goto out;
+    }
+
+    if (gs->windex >= gs->max_num_wait) {
+        mp_dbg_msg("No more slot to hold this in-flight wait.\n");
+        ret = ENOMEM;
         goto out;
     }
 
