@@ -191,10 +191,10 @@ typedef enum mp_kernel_gs_type {
     MP_KERNEL_GS_TYPE_STREAM;
 } mp_kernel_gs_type_t;
 
-enum {
+typedef enum mp_gs_req_type {
     MP_GS_REQ_TYPE_SEND = 0, 
     MP_GS_REQ_TYPE_RECV,     
-};
+} mp_gs_req_type_t;
 
 struct mp_gs_req {
     uint32_t type,
@@ -208,7 +208,6 @@ typedef struct mp_kernel_gs_send_param {
 } mp_kernel_gs_send_param_t;
 
 typedef struct mp_kernel_gs_wait_param {
-    mp_gs_wait_type_t type;
     struct mp_gs_req req;
 } mp_kernel_gs_wait_param_t;
 
@@ -218,10 +217,11 @@ struct mp_kernel_gs {
     int peer;
 
     uint32_t  max_num_send;
-    uint32_t *max_num_send_d;
     uint32_t  max_num_recv;
-    uint32_t *max_num_recv_d;
     uint32_t  max_num_wait;
+
+    uint32_t *max_num_send_d;
+    uint32_t *max_num_recv_d;
     uint32_t *max_num_wait_d;
 
     struct mp_request *sreq;

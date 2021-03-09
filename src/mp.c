@@ -2736,8 +2736,47 @@ out:
 
 static void gs_graph_begin(void *data)
 {
-    // TODO: Implement this.
-    mp_err_msg("Not yet implemented!\n");
+    int status = 0;
+
+    struct mp_kernel_gs *gs = (struct mp_kernel_gs *)data;
+
+    mp_kernel_gs_send_param_t *sparam;
+    mp_kernel_gs_wait_param_t *wparam;
+
+    mp_request_t *req;
+
+    uint32_t i;
+
+    for (i = 0; i < gs->sindex; ++i) {
+        sparam = &gs->send_params[i];
+        status = mp_send_prepare(sparam->buf, sparam->size, gs->peer, sparam->reg, &gs->sreq[i]);
+        if (status) {
+            mp_err_msg("Error in mp_send_prepare: %d\n", status);
+            goto out;
+        }
+
+        status = mp::mlx5::get_descriptors(&gs->sdesc[i], &gs->sreq[i]);
+        if (status) {
+            mp_err_msg("Error in mp::mlx5::get_descriptors for send: %d\n", status);
+            goto out;
+        }
+    }
+
+    for (i = 0; i < gs->windex; ++i) {
+        wparam = &gs->wait_params[i];
+        if (wparam->req.type == MP_GS_REQ_TYPE_SEND)
+            req = &gs->sreq[wparam->req.index];
+        else if (wparam->req.type == MP_GS_REQ_TYPE_RECV)
+            req = &gs->rreq[wparam->req.index];
+        status = mp::mlx5::get_descriptors(&gs->wdesc[i], req);
+        if (status) {
+            mp_err_msg("Error in mp::mlx5::get_descriptors for wait: %d\n", status);
+            goto out;
+        }
+    }
+
+out:
+    return;
 }
 
 int mp_graph_begin(mp_kernel_gs_t gs, cudaGraphNode_t *dependencies, size_t dep_size)
