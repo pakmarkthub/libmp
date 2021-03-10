@@ -150,7 +150,6 @@ cudaStream_t main_stream;
 size_t buf_size; 
 int capture_graph = 0;
 cudaGraph_t graph, graph_comms;
-cudaGraph_t subgraph, subgraph_comms;
 cudaGraphExec_t graphexec, graphexec_comms;
 
 graph_preparation_arg_t *graph_pre_arg;
@@ -410,6 +409,13 @@ void create_async_graph (size_t size, long long int kernel_size)
     for (int k = 0; k < num_streams; k++) {
         stream_state_t *curr_stream = (stream_state + k); 
 
+        MP_CHECK(mp_graph_alloc(
+            peer * num_streams + k,
+            steps_per_batch,
+            steps_per_batch,
+            &curr_stream->graph_gs
+        ));
+
         MP_CHECK(mp_gs_add_start_node(
             curr_stream->graph_gs,
             graph,
@@ -561,6 +567,13 @@ void create_async_graph (size_t size, long long int kernel_size)
     for (int k = 0; k < num_streams; k++) {
         stream_state_t *curr_stream = (stream_state + k); 
 
+        MP_CHECK(mp_graph_alloc(
+            peer * num_streams + k,
+            steps_per_batch,
+            steps_per_batch,
+            &curr_stream->graph_comms_gs
+        ));
+
         MP_CHECK(mp_gs_add_start_node(
             curr_stream->graph_comms_gs,
             graph_comms,
@@ -665,13 +678,14 @@ void destroy_async_graph ()
     CUDA_CHECK(cudaGraphExecDestroy(graphexec_comms));
     CUDA_CHECK(cudaGraphDestroy(graph));
     CUDA_CHECK(cudaGraphDestroy(graph_comms));
+
     if (!capture_graph) {
-       CUDA_CHECK(cudaGraphDestroy(subgraph));
-       CUDA_CHECK(cudaGraphDestroy(subgraph_comms));
-       for(int k=0; k<num_streams; k++) {
-           CUDA_CHECK(cudaGraphDestroy(stream_state[k].subgraph));
-           CUDA_CHECK(cudaGraphDestroy(stream_state[k].subgraph_comms));
-       }
+        for (int k = 0; k < num_streams; k++) {
+            stream_state_t *curr_stream = (stream_state + k); 
+
+            mp_gs_free(curr_stream->graph_gs);
+            mp_gs_free(curr_stream->graph_comms_gs);
+        }
     }
 }
 
