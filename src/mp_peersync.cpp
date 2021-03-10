@@ -537,7 +537,7 @@ int mp_isendv_on_stream (struct iovec *v, int nvecs, int peer, mp_reg_t *reg_t,
   req = new_stream_request(client, MP_SEND, MP_PENDING_NOWAIT, stream);
   assert(req);
 
-  req->sgv = malloc(sizeof(struct ibv_sge)*nvecs);
+  req->sgv = (ibv_sge *)malloc(sizeof(struct ibv_sge)*nvecs);
   assert(req->sgv);
 
   for (i=0; i < nvecs; ++i) {
@@ -673,7 +673,7 @@ int mp_sendv_prepare(struct iovec *v, int nvecs, int peer, mp_reg_t *reg_t, mp_r
   req = new_stream_request(client, MP_SEND, MP_PREPARED, NULL);
   assert(req);
 
-  req->sgv = malloc(sizeof(struct ibv_sge)*nvecs);
+  req->sgv = (ibv_sge *)malloc(sizeof(struct ibv_sge)*nvecs);
   assert(req->sgv);
 
   for (i=0; i < nvecs; ++i) {
@@ -967,8 +967,8 @@ int mp_send_post_all_on_stream (uint32_t count, mp_request_t *req_t, cudaStream_
            gds_send_request = gds_send_request_local;
            gds_wait_request = gds_wait_request_local;
        } else {
-           gds_send_request = malloc(count*sizeof(*gds_send_request));
-           gds_wait_request = malloc(count*sizeof(*gds_wait_request));
+           gds_send_request = (gds_send_request_t *)malloc(count*sizeof(*gds_send_request));
+           gds_wait_request = (gds_wait_request_t *)malloc(count*sizeof(*gds_wait_request));
        }
 
        for (i=0; i<count; i++) {
@@ -1064,7 +1064,7 @@ int mp_isend_post_all_on_stream (uint32_t count, mp_request_t *req_t, cudaStream
         if (count <= 8) {
             gds_send_request = gds_send_request_local;
         } else {
-            gds_send_request = malloc(count*sizeof(gds_send_request_t));
+            gds_send_request = (gds_send_request_t *)malloc(count*sizeof(gds_send_request_t));
         }
 
         for (i=0; i<count; i++) {
@@ -1233,7 +1233,7 @@ int mp_wait_all_on_stream (uint32_t count, mp_request_t *req_t, cudaStream_t str
         if (count <= 8) {
             gds_wait_request = gds_wait_request_local;
         } else {
-            gds_wait_request = malloc(count*sizeof(gds_wait_request_t));
+            gds_wait_request = (gds_wait_request_t *)malloc(count*sizeof(gds_wait_request_t));
         }
 
         for (i=0; i<count; i++) {
@@ -1280,6 +1280,8 @@ int mp_put_prepare (void *src, int size, mp_reg_t *reg_t, int peer, size_t displ
   struct mp_request *req = NULL;
   struct mp_reg *reg = *reg_t;
   struct mp_window *window = *window_t;
+  int client_id;
+  client_t *client;
 
   if (mp_enable_ud) { 
 	mp_err_msg("put/get not supported with UD \n");
@@ -1287,8 +1289,8 @@ int mp_put_prepare (void *src, int size, mp_reg_t *reg_t, int peer, size_t displ
 	goto out;
   }
 
-  int client_id = client_index[peer];
-  client_t *client = &clients[client_id];
+  client_id = client_index[peer];
+  client = &clients[client_id];
 
   assert(displ < window->rsize[client_id]);
 
@@ -1360,6 +1362,8 @@ int mp_iput_on_stream (void *src, int size, mp_reg_t *reg_t, int peer, size_t di
   struct mp_request *req = NULL;
   struct mp_reg *reg = *reg_t;
   struct mp_window *window = *window_t;
+  int client_id;
+  client_t *client;
 
   if (mp_enable_ud) { 
 	mp_err_msg("put/get not supported with UD \n");
@@ -1367,8 +1371,8 @@ int mp_iput_on_stream (void *src, int size, mp_reg_t *reg_t, int peer, size_t di
 	goto out;
   }
 
-  int client_id = client_index[peer];
-  client_t *client = &clients[client_id];
+  client_id = client_index[peer];
+  client = &clients[client_id];
 
   assert(displ < window->rsize[client_id]);
 
@@ -1439,6 +1443,8 @@ int mp_iget_on_stream (void *dst, int size, mp_reg_t *reg_t, int peer, size_t di
   struct mp_request *req;
   struct mp_reg *reg = *reg_t;
   struct mp_window *window = *window_t;
+  int client_id;
+  client_t *client;
 
   if (mp_enable_ud) { 
 	mp_err_msg("put/get not supported with UD \n");
@@ -1446,8 +1452,8 @@ int mp_iget_on_stream (void *dst, int size, mp_reg_t *reg_t, int peer, size_t di
 	goto out;
   }
 
-  int client_id = client_index[peer];
-  client_t *client = &clients[client_id];
+  client_id = client_index[peer];
+  client = &clients[client_id];
 
   assert(displ < window->rsize[client_id]);
 
@@ -1527,7 +1533,7 @@ int mp_iput_post_all_on_stream (uint32_t count, mp_request_t *req_t, cudaStream_
     if (count <= 8) {
         gds_send_request = gds_send_request_local;
     } else {
-        gds_send_request = malloc(count*sizeof(gds_send_request_t));
+        gds_send_request = (gds_send_request_t *)malloc(count*sizeof(gds_send_request_t));
         if (!gds_send_request) {
             mp_err_msg("cannot allocate memory\n");
             ret = ENOMEM;
@@ -1580,7 +1586,7 @@ int mp_wait32_on_stream(uint32_t *ptr, uint32_t value, int flags, cudaStream_t s
     ret = gds_prepare_wait_value32(&descs[n_descs].wait32,
                                    ptr,
                                    value,
-                                   cond_flags,
+                                   (gds_wait_cond_flag_t)cond_flags,
                                    GDS_MEMORY_HOST|GDS_WAIT_POST_FLUSH);
     ++n_descs;
     if (ret) {

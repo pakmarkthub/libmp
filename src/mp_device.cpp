@@ -137,3 +137,154 @@ namespace mp {
 
     }
 }
+
+int mp_gs_add_isend_node(mp_gs_t gs, void **buf, int *size, mp_reg_t *reg, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq)
+{
+    int ret = 0;
+
+    cudaError_t cuda_result;
+
+    cudaGraphNode_t node;
+    cudaKernelNodeParams params;
+
+    struct mp_gs_req _sreq;
+
+    void *args[3];
+
+    if (gs->sindex >= gs->max_num_send) {
+        mp_dbg_msg("No more slot to hold this in-flight send.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
+    params.func = (void *)mp::device::mlx5::send_op_kernel;
+    params.gridDim = 1;
+    params.blockDim = 1;
+    params.sharedMemBytes = 0;
+
+    args[0] = (void *)gs->sdesc_d;
+    args[1] = (void *)gs->sindex_d;
+    args[2] = (void *)gs->max_num_send_d;
+
+    params.kernelParams = args;
+    params.extra = NULL;
+
+    cuda_result = cudaGraphAddKernelNode(&node, graph, dependencies, dep_size, &params);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Error in cudaGraphAddHostNode: %s\n", cudaGetErrorName(cuda_result));
+        ret = EINVAL;
+        goto out;
+    }
+
+    gs->send_params[gs->sindex].buf = buf;
+    gs->send_params[gs->sindex].size = size;
+    gs->send_params[gs->sindex].reg = reg;
+
+    gs->send_nodes[gs->sindex] = node;
+    *snode = node;
+
+    _sreq.type = MP_GS_REQ_TYPE_SEND;
+    _sreq.index = gs->sindex;
+    *sreq = (mp_gs_req_t)_sreq;
+
+    ++gs->sindex;
+
+out:
+    return ret;
+}
+
+int mp_gs_add_irecv_node(mp_gs_t gs, void **buf, int *size, mp_reg_t *reg, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *rnode, mp_gs_req_t *rreq)
+{
+    int ret = 0;
+
+    cudaError_t cuda_result;
+
+    cudaGraphNode_t node;
+
+    struct mp_gs_req _rreq;
+
+    if (gs->rindex >= gs->max_num_recv) {
+        mp_dbg_msg("No more slot to hold this in-flight recv.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
+    cuda_result = cudaGraphAddEmptyNode(&node, graph, dependencies, dep_size, &params);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Error in cudaGraphAddHostNode: %s\n", cudaGetErrorName(cuda_result));
+        ret = EINVAL;
+        goto out;
+    }
+
+    gs->recv_params[gs->rindex].buf = buf;
+    gs->recv_params[gs->rindex].size = size;
+    gs->recv_params[gs->rindex].reg = reg;
+
+    gs->recv_nodes[gs->rindex] = node;
+    *snode = node;
+
+    _rreq.type = MP_GS_REQ_TYPE_RECV;
+    _rreq.index = gs->rindex;
+    *rreq = (mp_gs_req_t)_rreq;
+
+    ++gs->rindex;
+
+out:
+    return ret;
+}
+
+int mp_gs_add_wait_node(mp_gs_t gs, mp_gs_req_t req, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *wnode)
+{
+    int ret = 0;
+
+    cudaError_t cuda_result;
+
+    cudaGraphNode_t node;
+    cudaKernelNodeParams params;
+
+    struct mp_gs_req _req = (struct mp_gs_req)req;
+
+    void *args[3];
+
+    if (gs->windex >= gs->max_num_wait) {
+        mp_dbg_msg("No more slot to hold this in-flight wait.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
+    params.func = (void *)mp::device::mlx5::wait_op_kernel;
+    params.gridDim = 1;
+    params.blockDim = 1;
+    params.sharedMemBytes = 0;
+
+    args[0] = (void *)gs->wdesc_d;
+    args[1] = (void *)gs->windex_d;
+    args[2] = (void *)gs->max_num_wait_d;
+
+    params.kernelParams = args;
+    params.extra = NULL;
+
+    if ((_req.type == MP_GS_REQ_TYPE_SEND && _req.index > gs->sindex) || (_req.type == MP_GS_REQ_TYPE_RECV && _req.index > gs->rindex)) {
+        mp_dbg_msg("req not found.\n");
+        ret = EINVAL;
+        goto out;
+    }
+
+    cuda_result = cudaGraphAddKernelNode(&node, graph, dependencies, dep_size, &params);
+    if (cuda_result != cudaSuccess) {
+        mp_dbg_msg("Error in cudaGraphAddHostNode: %s\n", cudaGetErrorName(cuda_result));
+        ret = EINVAL;
+        goto out;
+    }
+
+    gs->wait_params[gs->windex].req = _req;
+
+    gs->wait_nodes[gs->windex] = node;
+    *wnode = node;
+
+    ++gs->windex;
+
+out:
+    return ret;
+}
+

@@ -31,6 +31,7 @@
 #include <assert.h>
 #include <infiniband/verbs.h>
 #include <gdsync.h>
+#include <mp/device.cuh>
 
 #ifdef __cplusplus
 extern "C" 
@@ -192,8 +193,8 @@ typedef enum mp_gs_req_type {
 } mp_gs_req_type_t;
 
 struct mp_gs_req {
-    uint32_t type,
-    uint32_t index
+    uint32_t type;
+    uint32_t index;
 };
 
 typedef struct mp_gs_sr_param {
@@ -217,8 +218,8 @@ struct mp_gs {
     uint32_t *max_num_recv_d;
     uint32_t *max_num_wait_d;
 
-    struct mp_request *sreq;
-    struct mp_request *rreq;
+    mp_request_t *sreq;
+    mp_request_t *rreq;
 
     mp::mlx5::send_desc_t *sdesc;
     mp::mlx5::send_desc_t *sdesc_d;

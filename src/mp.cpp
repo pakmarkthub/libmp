@@ -292,7 +292,7 @@ int progress_ipc ()
 	if (entry) {
 	    assert (0 == memcmp(&next->handle, &entry->handle, sizeof(CUipcMemHandle)));
 	} else {
-            entry = malloc(sizeof(ipc_handle_cache_entry_t));
+            entry = (ipc_handle_cache_entry_t *)malloc(sizeof(ipc_handle_cache_entry_t));
             if (!entry) {
                 fprintf(stderr, "cache entry allocation failed \n");
                 ret = MP_FAILURE;
@@ -445,7 +445,7 @@ int mp_progress_single_flow(mp_flow_t flow)
     int cqe_count = 0;
 
     if (!wc) {
-        wc = malloc(sizeof(struct ibv_wc)*cq_poll_count);
+        wc = (struct ibv_wc *)malloc(sizeof(struct ibv_wc)*cq_poll_count);
     }
 
     const char *flow_str = mp_flow_to_str(flow);
@@ -479,7 +479,7 @@ int mp_progress_single_flow(mp_flow_t flow)
             int j;
             for (j=0; j<ne; j++) {
                 struct ibv_wc *wc_curr = wc + j;
-                mp_dbg_msg("client:%d wc[%d]: status=%x(%s) opcode=%x byte_len=%d wr_id=%"PRIx64"\n",
+                mp_dbg_msg("client:%d wc[%d]: status=%x(%s) opcode=%x byte_len=%d wr_id=%" PRIx64 "\n",
                            client->mpi_rank, j,
                            wc_curr->status, ibv_wc_status_str(wc_curr->status), 
                            wc_curr->opcode, wc_curr->byte_len, wc_curr->wr_id);
@@ -527,19 +527,11 @@ out:
     return ret;
 }
 
-int mp_test(mp_request_t *req)
-{
-  int ret = 0;
-
-  ret = mp_test_one(req);
-
-  return ret;
-}
-
 int mp_test_one (mp_request_t *req_)
 {
     int ret = 0;
-    
+
+    us_t now;
     us_t start = mp_get_cycles();
     us_t tmout = MP_PROGRESS_ERROR_CHECK_TMOUT_US;
     
@@ -588,7 +580,7 @@ int mp_test_one (mp_request_t *req_)
         goto out;
     }
 
-    us_t now = mp_get_cycles();
+    now = mp_get_cycles();
     if (((long)now-(long)start) > (long)tmout) {
         start = now;
         mp_warn_msg("checking for GPU errors\n");
@@ -606,6 +598,15 @@ int mp_test_one (mp_request_t *req_)
 
 out:
     return ret;
+}
+
+int mp_test(mp_request_t *req)
+{
+  int ret = 0;
+
+  ret = mp_test_one(req);
+
+  return ret;
 }
 
 
@@ -827,7 +828,7 @@ int mp_register(void *addr, size_t length, mp_reg_t *reg_)
   //int myrank;
   //MPI_Comm_rank (MPI_COMM_WORLD, &myrank);
 
-  struct mp_reg *reg = calloc(1, sizeof(struct mp_reg));
+  struct mp_reg *reg = (struct mp_reg *)calloc(1, sizeof(struct mp_reg));
   if (!reg) {
       mp_err_msg("malloc returned NULL while allocating struct mp_reg\n");
       return MP_FAILURE;
@@ -1020,9 +1021,9 @@ int select_init_device()
       local_rank = atoi(getenv("OMPI_COMM_WORLD_LOCAL_RANK"));
   }
   if (local_rank == 0) {
-      req_dev = "mlx5_0";
+      req_dev = (char *)"mlx5_0";
   } else {
-      req_dev = "mlx5_1";
+      req_dev = (char *)"mlx5_1";
   }
   fprintf(stderr, "[rank: %d] using device %s \n", mpi_comm_rank, req_dev);
 
@@ -1046,7 +1047,7 @@ int select_init_device()
   mp_info_msg("HCA dev: %s\n", ibv_get_device_name(ib_dev));
 
   /*create context, pd, cq*/
-  ib_ctx = malloc (sizeof (ib_context_t));
+  ib_ctx = (ib_context_t *)malloc (sizeof (ib_context_t));
   if (ib_ctx == NULL) {
     mp_err_msg("ib_ctx allocation failed \n");
     return MP_FAILURE;
@@ -1124,21 +1125,21 @@ int mp_init_multistream(MPI_Comm comm, int *peers, int count, int flags,
   assert(mp_request_free_list != NULL);
 
   /*establish connections*/
-  client_index = malloc(sizeof(int)*comm_size*streams_per_rank);
+  client_index = (int *)malloc(sizeof(int)*comm_size*streams_per_rank);
   if (client_index == NULL) {
     mp_err_msg("allocation failed \n");
     return MP_FAILURE;
   }
   memset(client_index, bad_index, sizeof(int)*comm_size*streams_per_rank);
 
-  clients = malloc(sizeof(client_t)*client_count);
+  clients = (client_t *)malloc(sizeof(client_t)*client_count);
   if (clients == NULL) {
     mp_err_msg("allocation failed \n");
     return MP_FAILURE;
   }
   memset(clients, 0, sizeof(client_t)*client_count);
 
-  qpinfo_all = malloc (sizeof(qpinfo_t)*comm_size*streams_per_rank);
+  qpinfo_all = (qpinfo_t *)malloc (sizeof(qpinfo_t)*comm_size*streams_per_rank);
   if (qpinfo_all == NULL) {
     mp_err_msg("qpinfo allocation failed \n");
     return MP_FAILURE;
@@ -1458,7 +1459,7 @@ int mp_init (MPI_Comm comm, int *peers, int count, int init_flags, int gpu_id)
   mp_info_msg("HCA dev: %s\n", ibv_get_device_name(ib_dev));
 
   /*create context, pd, cq*/
-  ib_ctx = malloc (sizeof (ib_context_t));
+  ib_ctx = (ib_context_t *)malloc (sizeof (ib_context_t));
   if (ib_ctx == NULL) {
     mp_err_msg("ib_ctx allocation failed \n");
     return MP_FAILURE;
@@ -1494,21 +1495,21 @@ int mp_init (MPI_Comm comm, int *peers, int count, int init_flags, int gpu_id)
   assert(mp_request_free_list != NULL);
 
   /*establish connections*/
-  client_index = malloc(sizeof(int)*comm_size);
+  client_index = (int *)malloc(sizeof(int)*comm_size);
   if (client_index == NULL) {
     mp_err_msg("allocation failed \n");
     return MP_FAILURE;
   }
   memset(client_index, bad_index, sizeof(int)*comm_size);
 
-  clients = malloc(sizeof(client_t)*client_count);
+  clients = (client_t *)malloc(sizeof(client_t)*client_count);
   if (clients == NULL) {
     mp_err_msg("allocation failed \n");
     return MP_FAILURE;
   }
   memset(clients, 0, sizeof(client_t)*client_count);
 
-  qpinfo_all = malloc (sizeof(qpinfo_t)*comm_size);
+  qpinfo_all = (qpinfo_t *)malloc (sizeof(qpinfo_t)*comm_size);
   if (qpinfo_all == NULL) {
     mp_err_msg("qpinfo allocation failed \n");
     return MP_FAILURE;
@@ -1710,7 +1711,7 @@ int mp_init (MPI_Comm comm, int *peers, int count, int init_flags, int gpu_id)
 
   //ipc connection setup
   if (mp_enable_ipc) {
-      node_info_all = malloc(sizeof(struct node_info)*mpi_comm_size);
+      node_info_all = (struct node_info *)malloc(sizeof(struct node_info)*mpi_comm_size);
       if (!node_info_all) {
  	  mp_err_msg("Failed to allocate node info array \n");
 	  return MP_FAILURE;
@@ -1822,7 +1823,7 @@ int mp_init (MPI_Comm comm, int *peers, int count, int init_flags, int gpu_id)
           if (clients[cidx].is_local) {
 	        assert(smp_local_rank >= 0);
  
-		clients[cidx].smp.local_buffer = (void *)((char *)shm_mapptr 
+		clients[cidx].smp.local_buffer = (smp_buffer_t *)((char *)shm_mapptr 
 					+ shm_proc_bufsize*smp_local_rank 
 					+ shm_client_bufsize*clients[cidx].local_rank);
 
@@ -1832,7 +1833,7 @@ int mp_init (MPI_Comm comm, int *peers, int count, int init_flags, int gpu_id)
 		    clients[cidx].smp.local_buffer[j].free = 1;
 		}
 
-		clients[cidx].smp.remote_buffer = (void *)((char *)shm_mapptr 
+		clients[cidx].smp.remote_buffer = (smp_buffer_t *)((char *)shm_mapptr 
 					+ shm_proc_bufsize*clients[cidx].local_rank 
 					+ shm_client_bufsize*smp_local_rank);
 	  }
@@ -1964,6 +1965,7 @@ int mp_irecvv (struct iovec *v, int nvecs, int peer, mp_reg_t *reg_t, mp_request
   int i, ret = 0;
   struct mp_request *req = NULL;
   struct mp_reg *reg = (struct mp_reg *) *reg_t;
+  client_t *client;
 
   if (nvecs > ib_max_sge) {
       mp_err_msg("exceeding max supported vector size: %d \n", ib_max_sge);
@@ -1971,11 +1973,11 @@ int mp_irecvv (struct iovec *v, int nvecs, int peer, mp_reg_t *reg_t, mp_request
       goto out;
   }
 
-  client_t *client = &clients[client_index[peer]];
+  client = &clients[client_index[peer]];
 
   req = new_request(client, MP_RECV, MP_PENDING_NOWAIT);
   assert(req);
-  req->sgv = malloc(sizeof(struct ibv_sge)*nvecs);
+  req->sgv = (ibv_sge *)malloc(sizeof(struct ibv_sge)*nvecs);
   assert(req->sgv);
 
   mp_dbg_msg("req=%p id=%d\n", req, req->id);
@@ -2074,7 +2076,7 @@ int mp_isend (void *buf, int size, int peer, mp_reg_t *reg_t, mp_request_t *req_
         //try to find in local handle cache
         ipc_handle_cache_find (buf, size, &entry, mpi_comm_rank);
         if (!entry) { 
-            entry = malloc(sizeof(ipc_handle_cache_entry_t));
+            entry = (ipc_handle_cache_entry_t *)malloc(sizeof(ipc_handle_cache_entry_t));
         if (!entry) { 
             mp_err_msg("cache entry allocation failed \n");	
             ret = MP_FAILURE;
@@ -2147,6 +2149,7 @@ int mp_isendv (struct iovec *v, int nvecs, int peer, mp_reg_t *reg_t, mp_request
   int i, ret = 0;
   struct mp_request *req;
   struct mp_reg *reg = (struct mp_reg *) *reg_t;
+  client_t *client;
 
   if (nvecs > ib_max_sge) {
       mp_err_msg("exceeding max supported vector size: %d \n", ib_max_sge);
@@ -2154,11 +2157,11 @@ int mp_isendv (struct iovec *v, int nvecs, int peer, mp_reg_t *reg_t, mp_request
       goto out;
   }
 
-  client_t *client = &clients[client_index[peer]];
+  client = &clients[client_index[peer]];
 
   req = new_request(client, MP_SEND, MP_PENDING_NOWAIT);
   assert(req);
-  req->sgv = malloc(sizeof(struct ibv_sge)*nvecs);
+  req->sgv = (ibv_sge *)malloc(sizeof(struct ibv_sge)*nvecs);
   assert(req->sgv);
 
   mp_dbg_msg("req=%p id=%d\n", req, req->id);
@@ -2302,17 +2305,17 @@ int mp_window_create(void *addr, size_t size, mp_window_t *window_t)
   exchange_win_info *exchange_win = NULL; 
   int i, peer;
 
-  window = malloc (sizeof(struct mp_window));
+  window = (mp_window *)malloc (sizeof(struct mp_window));
   assert(window != NULL); 
 
-  window->base_ptr = malloc (client_count*sizeof(void *));
+  window->base_ptr = (void **)malloc (client_count*sizeof(void *));
   assert(window->base_ptr != NULL);
-  window->rkey = malloc (client_count*sizeof(uint32_t));
+  window->rkey = (uint32_t *)malloc (client_count*sizeof(uint32_t));
   assert(window->rkey != NULL);
-  window->rsize = malloc (client_count*sizeof(uint64_t));
+  window->rsize = (uint64_t *)malloc (client_count*sizeof(uint64_t));
   assert(window->rsize != NULL);
 
-  exchange_win = malloc (mpi_comm_size*sizeof(exchange_win_info));
+  exchange_win = (exchange_win_info *)malloc (mpi_comm_size*sizeof(exchange_win_info));
   assert(exchange_win != NULL); 
 
   window->reg=NULL;
@@ -2367,6 +2370,8 @@ int mp_iput (void *src, int size, mp_reg_t *reg_t, int peer, size_t displ,
   struct mp_request *req;
   struct mp_reg *reg = *reg_t;
   struct mp_window *window = *window_t;
+  int client_id;
+  client_t *client;
 
   if (mp_enable_ud) { 
 	mp_err_msg("put/get not supported with UD \n");
@@ -2374,8 +2379,8 @@ int mp_iput (void *src, int size, mp_reg_t *reg_t, int peer, size_t displ,
 	goto out;
   }
 
-  int client_id = client_index[peer];
-  client_t *client = &clients[client_id];
+  client_id = client_index[peer];
+  client = &clients[client_id];
 
   assert(displ < window->rsize[client_id]);
 
@@ -2429,6 +2434,8 @@ int mp_iget (void *dst, int size, mp_reg_t *reg_t, int peer, size_t displ,
   struct mp_request *req;
   struct mp_reg *reg = *reg_t;
   struct mp_window *window = *window_t;
+  int client_id;
+  client_t *client;
 
   if (mp_enable_ud) { 
 	mp_err_msg("put/get not supported with UD \n");
@@ -2436,8 +2443,8 @@ int mp_iget (void *dst, int size, mp_reg_t *reg_t, int peer, size_t displ,
 	goto out;
   }
 
-  int client_id = client_index[peer];
-  client_t *client = &clients[client_id];
+  client_id = client_index[peer];
+  client = &clients[client_id];
 
   assert(displ < window->rsize[client_id]);
 
@@ -2445,7 +2452,7 @@ int mp_iget (void *dst, int size, mp_reg_t *reg_t, int peer, size_t displ,
 
   req->in.sr.next = NULL;
   req->in.sr.exp_send_flags = IBV_EXP_SEND_SIGNALED;
-  req->in.sr.exp_opcode = IBV_WR_RDMA_READ;
+  req->in.sr.exp_opcode = (ibv_exp_wr_opcode)IBV_WR_RDMA_READ;
   req->in.sr.wr_id = (uintptr_t) req;
   req->in.sr.num_sge = 1;
   req->in.sr.sg_list = &req->sg_entry;
@@ -2548,14 +2555,14 @@ int mp_gs_alloc(int peer, uint32_t max_num_send, uint32_t max_num_recv, mp_gs_t 
         goto out;
     }
 
-    _gs->sreq = (struct mp_request *)calloc(max_num_send, sizeof(struct mp_request));
+    _gs->sreq = (mp_request_t *)calloc(max_num_send, sizeof(mp_request_t));
     if (!_gs->sreq) {
         mp_dbg_msg("Cannot allocate _gs->sreq.\n");
         ret = ENOMEM;
         goto out;
     }
 
-    _gs->rreq = (struct mp_request *)calloc(max_num_recv, sizeof(struct mp_request));
+    _gs->rreq = (mp_request_t *)calloc(max_num_recv, sizeof(mp_request_t));
     if (!_gs->rreq) {
         mp_dbg_msg("Cannot allocate _gs->rreq.\n");
         ret = ENOMEM;
@@ -2583,9 +2590,16 @@ int mp_gs_alloc(int peer, uint32_t max_num_send, uint32_t max_num_recv, mp_gs_t 
         goto out;
     }
 
-    _gs->send_params = (mp_gs_send_param_t *)malloc(sizeof(mp_gs_send_param_t) * max_num_send);
+    _gs->send_params = (mp_gs_sr_param_t *)malloc(sizeof(mp_gs_sr_param_t) * max_num_send);
     if (!_gs->send_params) {
         mp_dbg_msg("Cannot allocate _gs->send_params.\n");
+        ret = ENOMEM;
+        goto out;
+    }
+
+    _gs->recv_params = (mp_gs_sr_param_t *)malloc(sizeof(mp_gs_sr_param_t) * max_num_recv);
+    if (!_gs->recv_params) {
+        mp_dbg_msg("Cannot allocate _gs->recv_params.\n");
         ret = ENOMEM;
         goto out;
     }
@@ -2707,6 +2721,9 @@ out:
             if (_gs->wait_params)
                 free(_gs->wait_params);
 
+            if (_gs->recv_params)
+                free(_gs->recv_params);
+
             if (_gs->send_params)
                 free(_gs->send_params);
 
@@ -2814,7 +2831,7 @@ int mp_gs_add_start_node(mp_gs_t gs, cudaGraph_t graph, cudaGraphNode_t *depende
         goto out;
     }
 
-    gs->start_node = node;
+    gs->start_node = _node;
 
     *node = _node;
 
@@ -2863,159 +2880,9 @@ int mp_gs_add_end_node(mp_gs_t gs, cudaGraph_t graph, cudaGraphNode_t *dependenc
         goto out;
     }
 
-    gs->end_node = node;
+    gs->end_node = _node;
 
     *node = _node;
-
-out:
-    return ret;
-}
-
-int mp_gs_add_isend_node(mp_gs_t gs, void **buf, int *size, mp_reg_t *reg, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq)
-{
-    int ret = 0;
-
-    cudaError_t cuda_result;
-
-    cudaGraphNode_t node;
-    cudaKernelNodeParams params;
-
-    struct mp_gs_req _sreq;
-
-    void *args[3];
-
-    if (gs->sindex >= gs->max_num_send) {
-        mp_dbg_msg("No more slot to hold this in-flight send.\n");
-        ret = ENOMEM;
-        goto out;
-    }
-
-    params.func = (void *)mp::device::mlx5::send_op_kernel;
-    params.gridDim = 1;
-    params.blockDim = 1;
-    params.sharedMemBytes = 0;
-
-    args[0] = (void *)gs->sdesc_d;
-    args[1] = (void *)gs->sindex_d;
-    args[2] = (void *)gs->max_num_send_d;
-
-    params.kernelParams = args;
-    params.extra = NULL;
-
-    cuda_result = cudaGraphAddKernelNode(&node, graph, dependencies, dep_size, &params);
-    if (cuda_result != cudaSuccess) {
-        mp_dbg_msg("Error in cudaGraphAddHostNode: %s\n", cudaGetErrorName(cuda_result));
-        ret = EINVAL;
-        goto out;
-    }
-
-    gs->send_params[gs->sindex].buf = buf;
-    gs->send_params[gs->sindex].size = size;
-    gs->send_params[gs->sindex].reg = reg;
-
-    gs->send_nodes[gs->sindex] = node;
-    *snode = node;
-
-    _sreq.type = MP_GS_REQ_TYPE_SEND;
-    _sreq.index = gs->sindex;
-    *sreq = (mp_gs_req_t)_sreq;
-
-    ++gs->sindex;
-
-out:
-    return ret;
-}
-
-int mp_gs_add_irecv_node(mp_gs_t gs, void **buf, int *size, mp_reg_t *reg, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *rnode, mp_gs_req_t *rreq)
-{
-    int ret = 0;
-
-    cudaError_t cuda_result;
-
-    cudaGraphNode_t node;
-
-    struct mp_gs_req _rreq;
-
-    if (gs->rindex >= gs->max_num_recv) {
-        mp_dbg_msg("No more slot to hold this in-flight recv.\n");
-        ret = ENOMEM;
-        goto out;
-    }
-
-    cuda_result = cudaGraphAddEmptyNode(&node, graph, dependencies, dep_size, &params);
-    if (cuda_result != cudaSuccess) {
-        mp_dbg_msg("Error in cudaGraphAddHostNode: %s\n", cudaGetErrorName(cuda_result));
-        ret = EINVAL;
-        goto out;
-    }
-
-    gs->recv_params[gs->rindex].buf = buf;
-    gs->recv_params[gs->rindex].size = size;
-    gs->recv_params[gs->rindex].reg = reg;
-
-    gs->recv_nodes[gs->rindex] = node;
-    *snode = node;
-
-    _rreq.type = MP_GS_REQ_TYPE_RECV;
-    _rreq.index = gs->rindex;
-    *rreq = (mp_gs_req_t)_rreq;
-
-    ++gs->rindex;
-
-out:
-    return ret;
-}
-
-int mp_gs_add_wait_node(mp_gs_t gs, mp_gs_req_t req, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *wnode)
-{
-    int ret = 0;
-
-    cudaError_t cuda_result;
-
-    cudaGraphNode_t node;
-    cudaKernelNodeParams params;
-
-    struct mp_gs_req _req = (struct mp_gs_req)req;
-
-    void *args[3];
-
-    if (gs->windex >= gs->max_num_wait) {
-        mp_dbg_msg("No more slot to hold this in-flight wait.\n");
-        ret = ENOMEM;
-        goto out;
-    }
-
-    params.func = (void *)mp::device::mlx5::wait_op_kernel;
-    params.gridDim = 1;
-    params.blockDim = 1;
-    params.sharedMemBytes = 0;
-
-    args[0] = (void *)gs->wdesc_d;
-    args[1] = (void *)gs->windex_d;
-    args[2] = (void *)gs->max_num_wait_d;
-
-    params.kernelParams = args;
-    params.extra = NULL;
-
-    if ((_req.type == MP_GS_REQ_TYPE_SEND && _req.index > gs->sindex) || (_req.type == MP_GS_REQ_TYPE_RECV && _req.index > gs->rindex)) {
-        mp_dbg_msg("req not found.\n");
-        ret = EINVAL;
-        goto out;
-    }
-
-    cuda_result = cudaGraphAddKernelNode(&node, graph, dependencies, dep_size, &params);
-    if (cuda_result != cudaSuccess) {
-        mp_dbg_msg("Error in cudaGraphAddHostNode: %s\n", cudaGetErrorName(cuda_result));
-        ret = EINVAL;
-        goto out;
-    }
-
-    gs->wait_params[gs->windex].req = _req;
-
-    gs->wait_nodes[gs->windex] = node;
-    *wnode = node;
-
-    ++gs->windex;
 
 out:
     return ret;
@@ -3046,6 +2913,9 @@ void mp_gs_free(mp_gs_t gs)
 
     if (gs->wait_params)
         free(gs->wait_params);
+
+    if (gs->recv_params)
+        free(gs->recv_params);
 
     if (gs->send_params)
         free(gs->send_params);
