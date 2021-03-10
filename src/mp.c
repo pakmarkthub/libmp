@@ -2750,7 +2750,7 @@ static void gs_graph_start(void *data)
 
     for (i = 0; i < gs->sindex; ++i) {
         sparam = &gs->send_params[i];
-        status = mp_send_prepare(sparam->buf, sparam->size, gs->peer, sparam->reg, &gs->sreq[i]);
+        status = mp_send_prepare(*sparam->buf, *sparam->size, gs->peer, sparam->reg, &gs->sreq[i]);
         if (status) {
             mp_err_msg("Error in mp_send_prepare: %d\n", status);
             goto out;
@@ -2765,7 +2765,7 @@ static void gs_graph_start(void *data)
 
     for (i = 0; i < gs->rindex; ++i) {
         rparam = &gs->recv_params[i];
-        status = mp_irecv(rparam->buf, rparam->size, gs->peer, rparam->reg, &gs->rreq[i]);
+        status = mp_irecv(*rparam->buf, *rparam->size, gs->peer, rparam->reg, &gs->rreq[i]);
         if (status) {
             mp_err_msg("Error in mp_send_prepare: %d\n", status);
             goto out;
@@ -2871,7 +2871,7 @@ out:
     return ret;
 }
 
-int mp_gs_add_isend_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq)
+int mp_gs_add_isend_node(mp_gs_t gs, void **buf, int *size, mp_reg_t *reg, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq)
 {
     int ret = 0;
 
@@ -2926,7 +2926,7 @@ out:
     return ret;
 }
 
-int mp_gs_add_irecv_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *rnode, mp_gs_req_t *rreq)
+int mp_gs_add_irecv_node(mp_gs_t gs, void **buf, int *size, mp_reg_t *reg, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *rnode, mp_gs_req_t *rreq)
 {
     int ret = 0;
 

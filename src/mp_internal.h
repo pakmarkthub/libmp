@@ -197,8 +197,8 @@ struct mp_gs_req {
 };
 
 typedef struct mp_gs_sr_param {
-    void *buf;
-    int size;
+    void **buf;
+    int *size;
     mp_reg_t *reg;
 } mp_gs_sr_param_t;
 

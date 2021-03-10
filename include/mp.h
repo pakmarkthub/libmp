@@ -251,9 +251,9 @@ int mp_gs_add_end_node(mp_gs_t gs, cudaGraph_t graph, cudaGraphNode_t *dependenc
 /**
  * \brief Create and add an mp-isend graph node on the graph.
  * \param gs - mp_gs_t object.
- * \param buf - Send buffer.
- * \param size - Data size to send.
- * \param reg - mp_reg_t object for send.
+ * \param buf - Pointer to send buffer. The pointer will be dereferenced inside the graph.
+ * \param size - Pointer to send data size. The pointer will be dereferenced inside the graph.
+ * \param reg - Pointer to mp_reg_t send object. The pointer will be dereferenced inside the graph.
  * \param graph - graph to add this node to.
  * \param dependencies - Dependencies for this mp-isend graph node. 
  * \param dep_size - Number of elements in `dependencies`.
@@ -262,14 +262,14 @@ int mp_gs_add_end_node(mp_gs_t gs, cudaGraph_t graph, cudaGraphNode_t *dependenc
  *
  * \return MP_SUCCESS, MP_FAILURE
  */
-int mp_gs_add_isend_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq);
+int mp_gs_add_isend_node(mp_gs_t gs, void **buf, int *size, mp_reg_t *reg, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *snode, mp_gs_req_t *sreq);
 
 /**
  * \brief Create and add an mp-irecv graph node on the graph.
  * \param gs - mp_gs_t object.
- * \param buf - Recv buffer.
- * \param size - Data size to recv.
- * \param reg - mp_reg_t object for recv.
+ * \param buf - Pointer to recv buffer. The pointer will be dereferenced inside the graph.
+ * \param size - Pointer to recv data size. The pointer will be dereferenced inside the graph.
+ * \param reg - Pointer to mp_reg_t recv object. The pointer will be dereferenced inside the graph.
  * \param graph - graph to add this node to.
  * \param dependencies - Dependencies for this mp-irecv graph node. 
  * \param dep_size - Number of elements in `dependencies`.
@@ -278,7 +278,7 @@ int mp_gs_add_isend_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGra
  *
  * \return MP_SUCCESS, MP_FAILURE
  */
-int mp_gs_add_irecv_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *rnode, mp_gs_req_t *rreq);
+int mp_gs_add_irecv_node(mp_gs_t gs, void **buf, int *size, mp_reg_t *reg, cudaGraph_t graph, cudaGraphNode_t *dependencies, size_t dep_size, cudaGraphNode_t *rnode, mp_gs_req_t *rreq);
 
 /**
  * \brief Create and add an mp-wait graph node on the graph.

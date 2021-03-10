@@ -121,6 +121,7 @@ typedef struct {
     float *in = NULL;
     float *out = NULL;
     void *buf_d;
+    size_t comm_size;
     mp_request_t *sreq;
     mp_request_t *rreq;
     mp::mlx5::send_desc_t *sdesc;
@@ -132,9 +133,9 @@ typedef struct {
     uint32_t windex;
     uint32_t *sindex_d;
     uint32_t *windex_d;
-    cudaGraph_t subgraph;
-    cudaGraph_t subgraph_comms;
     cudaStream_t stream;
+    mp_gs_t graph_gs;
+    mp_gs_t graph_comms_gs;
 } stream_state_t; 
 
 typedef struct {
@@ -148,7 +149,6 @@ stream_state_t *stream_state;
 cudaStream_t main_stream;
 size_t buf_size; 
 int capture_graph = 0;
-cudaGraphNode_t emptyNode; 
 cudaGraph_t graph, graph_comms;
 cudaGraph_t subgraph, subgraph_comms;
 cudaGraphExec_t graphexec, graphexec_comms;
@@ -397,188 +397,266 @@ void capture_async_graph (int size, long long int kernel_size)
 
 void create_async_graph (size_t size, long long int kernel_size) 
 {
-    std::vector<cudaGraphNode_t> nodeDependencies, nodeDependencies2;
-    cudaGraphNode_t sendNode, waitNode, kernelNode, preNode, postNode;
-    cudaKernelNodeParams waitParams, sendParams, calcKernelParams, pollKernelParams;
-    cudaHostNodeParams preParams, postParams;
+    std::vector<cudaGraphNode_t> nodeDependencies;
+    std::vector<cudaGraphNode_t> nodeDependencies2;
+    cudaGraphNode_t sendNode, recvNode, waitNode, kernelNode, startNode, startNodeComms, endNode;
+    cudaGraphNode_t emptyNode;
+    cudaKernelNodeParams calcKernelParams, pollKernelParams;
     cudaGraphNode_t subgraphNode, subgraphNode_prev;
 
+    // Create graph and its nodes
     CUDA_CHECK(cudaGraphCreate(&graph, 0));
+    nodeDependencies2.clear();
+    for (int k = 0; k < num_streams; k++) {
+        stream_state_t *curr_stream = (stream_state + k); 
+
+        MP_CHECK(mp_gs_add_start_node(
+            curr_stream->graph_gs,
+            graph,
+            NULL,
+            0,
+            &startNode
+        ));
+
+        nodeDependencies.clear();
+        nodeDependencies.push_back(startNode);
+        for (j = 0; j < steps_per_batch; j++) {
+            MP_CHECK(mp_gs_add_irecv_node(
+                curr_stream->graph_gs, 
+                &curr_stream->buf_d,
+                &curr_stream->comm_size,
+                &curr_stream->reg,
+                graph,
+                nodeDependencies.data(),
+                nodeDependencies.size(),
+                &recvNode,
+                &curr_stream->gs_rreq[j]
+            ));
+            nodeDependencies.clear();
+            nodeDependencies.push_back(recvNode);
+        }
+        nodeDependencies2.push_back(nodeDependencies.back());
+    }
+
+    CUDA_CHECK(cudaGraphAddEmptyNode(&emptyNode, graph, nodeDependencies2.data(), nodeDependencies2.size()));
+
+    for (j = 0; j < steps_per_batch; j++) {
+        nodeDependencies2.clear()
+        for (int k = 0; k < num_streams; k++) {
+            stream_state_t *curr_stream = (stream_state + k); 
+
+            const float value = 0.1F; 
+            int n = kernel_size / sizeof(float);
+
+            calcKernelParams.func = (void*)calc_kernel;
+            calcKernelParams.gridDim = over_sub_factor * gpu_num_sm;
+            calcKernelParams.blockDim = 32*2;
+            calcKernelParams.sharedMemBytes = 0;
+            void *calcKernelArgs[4] = {(void*)&n, (void *)&value, (void *)&curr_stream->in, (void *)&curr_stream->out};
+            calcKernelParams.kernelParams = calcKernelArgs;
+            calcKernelParams.extra = NULL;
+
+            pollKernelParams.func = (void*)poll_kernel;
+            pollKernelParams.gridDim = 1;
+            pollKernelParams.blockDim = 1;
+            pollKernelParams.sharedMemBytes = 0;
+            void *pollKernelArgs[1] = {(void*)&kernel_size};
+            pollKernelParams.kernelParams = pollKernelArgs;
+            pollKernelParams.extra = NULL;
+
+            //subgraph with comms + comp
+            if (!my_rank) {
+                MP_CHECK(mp_gs_add_wait_node(
+                    curr_stream->graph_gs,
+                    curr_stream->gs_rreq[j],
+                    graph,
+                    &emptyNode,
+                    1
+                    &waitNode
+                ));
+                
+                nodeDependencies.clear();
+                nodeDependencies.push_back(waitNode);
+
+                if (use_calc_kernel > 0) {
+                    CUDA_CHECK(cudaGraphAddKernelNode(
+                        &kernelNode, graph, nodeDependencies.data(), 
+                        nodeDependencies.size(), &calcKernelParams
+                    ));
+                } 
+                else { 
+                    CUDA_CHECK(cudaGraphAddKernelNode(
+                        &kernelNode, graph, nodeDependencies.data(), 
+                        nodeDependencies.size(), &pollKernelParams
+                    ));
+                }
+
+                nodeDependencies.clear();
+                nodeDependencies.push_back(kernelNode);
+
+                MP_CHECK(mp_gs_add_isend_node(
+                    curr_stream->graph_gs,
+                    &curr_stream->buf_d,
+                    &curr_stream->comm_size,
+                    &curr_stream->reg,
+                    graph,
+                    nodeDependencies.data(),
+                    nodeDependencies.size()
+                    &sendNode,
+                    &curr_stream->gs_sreq[j]
+                ));
+
+                nodeDependencies2.push_back(sendNode);
+            } else {
+                MP_CHECK(mp_gs_add_isend_node(
+                    curr_stream->graph_gs,
+                    &curr_stream->buf_d,
+                    &curr_stream->comm_size,
+                    &curr_stream->reg,
+                    graph,
+                    &emptyNode,
+                    1,
+                    &sendNode,
+                    &curr_stream->gs_sreq[j]
+                ));
+
+                nodeDependencies.clear();
+                nodeDependencies.push_back(sendNode);
+
+                MP_CHECK(mp_gs_add_wait_node(
+                    curr_stream->graph_gs,
+                    curr_stream->gs_rreq[j],
+                    graph,
+                    nodeDependencies.data(),
+                    nodeDependencies.size(),
+                    &waitNode
+                ));
+
+                nodeDependencies.clear();
+                nodeDependencies.push_back(waitNode);
+
+                if (use_calc_kernel > 0) {
+                    CUDA_CHECK(cudaGraphAddKernelNode(
+                        &kernelNode, curr_stream->subgraph, nodeDependencies.data(), 
+                        nodeDependencies.size(), &calcKernelParams
+                    ));
+                } else { 
+                    CUDA_CHECK(cudaGraphAddKernelNode(
+                        &kernelNode, curr_stream->subgraph, nodeDependencies.data(), 
+                        nodeDependencies.size(), &pollKernelParams
+                    ));
+                }
+
+                nodeDependencies2.push_back(kernelNode);
+            }
+
+            CUDA_CHECK(cudaGraphAddEmptyNode(&emptyNode, graph, nodeDependencies2.data(), nodeDependencies2.size()));
+        }
+    }
+
+
+    // Create graph_comms and its nodes.
     CUDA_CHECK(cudaGraphCreate(&graph_comms, 0));
-    CUDA_CHECK(cudaGraphCreate(&subgraph, 0));
-    CUDA_CHECK(cudaGraphCreate(&subgraph_comms, 0));
-
-    preParams.fn = graph_prepare_work;
-    preParams.userData = graph_pre_arg;
-
-    postParams.fn = graph_post_work;
-    postParams.userData = graph_pre_arg;
-
-    for(int k=0; k<num_streams; k++) {
-	stream_state_t *curr_stream = (stream_state + k); 
-
-	waitParams.func = (void*)wait_op_kernel_graph;
-        waitParams.gridDim = 1;
-        waitParams.blockDim = 1;
-        waitParams.sharedMemBytes = 0;
-        void *waitArgs[2] = {(void*)&curr_stream->wdesc_d, (void *)&curr_stream->windex_d};
-        waitParams.kernelParams = waitArgs;
-        waitParams.extra = NULL;
-
-        sendParams.func = (void*)send_op_kernel_graph;
-        sendParams.gridDim = 1;
-        sendParams.blockDim = 1;
-        sendParams.sharedMemBytes = 0;
-        void *sendArgs[2] = {(void*)&curr_stream->sdesc_d, (void *)&curr_stream->sindex_d};
-        sendParams.kernelParams = sendArgs;
-        sendParams.extra = NULL;
-
-        const float value = 0.1F; 
-        int n = kernel_size / sizeof(float);
-
-        calcKernelParams.func = (void*)calc_kernel;
-        calcKernelParams.gridDim = over_sub_factor * gpu_num_sm;
-        calcKernelParams.blockDim = 32*2;
-        calcKernelParams.sharedMemBytes = 0;
-        void *calcKernelArgs[4] = {(void*)&n, (void *)&value, (void *)&curr_stream->in, (void *)&curr_stream->out};
-        calcKernelParams.kernelParams = calcKernelArgs;
-        calcKernelParams.extra = NULL;
-
-        pollKernelParams.func = (void*)poll_kernel;
-        pollKernelParams.gridDim = 1;
-        pollKernelParams.blockDim = 1;
-        pollKernelParams.sharedMemBytes = 0;
-        void *pollKernelArgs[1] = {(void*)&kernel_size};
-        pollKernelParams.kernelParams = pollKernelArgs;
-        pollKernelParams.extra = NULL;
-
-     	CUDA_CHECK(cudaGraphCreate(&curr_stream->subgraph, 0));
-        CUDA_CHECK(cudaGraphCreate(&curr_stream->subgraph_comms, 0));
-
-	//subgraph with comms + comp
-        if (!my_rank) {
-	   nodeDependencies.clear();
-     	   CUDA_CHECK(cudaGraphAddKernelNode(&waitNode, curr_stream->subgraph, nodeDependencies.data(), 
-	        		   nodeDependencies.size(), &waitParams));
-
-	   nodeDependencies.clear();
-           nodeDependencies.push_back(waitNode);
-           if (use_calc_kernel > 0) {
-               CUDA_CHECK(cudaGraphAddKernelNode(&kernelNode, curr_stream->subgraph, nodeDependencies.data(), 
-	        		       nodeDependencies.size(), &calcKernelParams));
-           } else { 
-               CUDA_CHECK(cudaGraphAddKernelNode(&kernelNode, curr_stream->subgraph, nodeDependencies.data(), 
-	        		       nodeDependencies.size(), &pollKernelParams));
-           }
-
-	   nodeDependencies.clear();
-           nodeDependencies.push_back(kernelNode);
-           CUDA_CHECK(cudaGraphAddKernelNode(&sendNode, curr_stream->subgraph, nodeDependencies.data(), 
-			   	nodeDependencies.size(), &sendParams));
-	} else {
-	   nodeDependencies.clear();
-           CUDA_CHECK(cudaGraphAddKernelNode(&sendNode, curr_stream->subgraph, nodeDependencies.data(), 
-	     		   	nodeDependencies.size(), &sendParams));
-
-	   nodeDependencies.clear();
-           nodeDependencies.push_back(sendNode);
-     	   CUDA_CHECK(cudaGraphAddKernelNode(&waitNode, curr_stream->subgraph, nodeDependencies.data(), 
-	     		   nodeDependencies.size(), &waitParams));
-
-	   nodeDependencies.clear();
-           nodeDependencies.push_back(waitNode);
-           if (use_calc_kernel > 0) {
-               CUDA_CHECK(cudaGraphAddKernelNode(&kernelNode, curr_stream->subgraph, nodeDependencies.data(), 
-	     		       nodeDependencies.size(), &calcKernelParams));
-           } else { 
-               CUDA_CHECK(cudaGraphAddKernelNode(&kernelNode, curr_stream->subgraph, nodeDependencies.data(), 
-	     		       nodeDependencies.size(), &pollKernelParams));
-           }
-    	}
-
-	//subgraph with comms
-        if (!my_rank) {
-	   nodeDependencies.clear();
-     	   CUDA_CHECK(cudaGraphAddKernelNode(&waitNode, curr_stream->subgraph_comms, nodeDependencies.data(), 
-	        		   nodeDependencies.size(), &waitParams));
-
-	   nodeDependencies.clear();
-           nodeDependencies.push_back(waitNode);
-           CUDA_CHECK(cudaGraphAddKernelNode(&sendNode, curr_stream->subgraph_comms, nodeDependencies.data(), 
-	     		   	nodeDependencies.size(), &sendParams));
-	   
-        } else {
-	   nodeDependencies.clear();
-           CUDA_CHECK(cudaGraphAddKernelNode(&sendNode, curr_stream->subgraph_comms, nodeDependencies.data(), 
-	     		   	nodeDependencies.size(), &sendParams));
-
-	   nodeDependencies.clear();
-           nodeDependencies.push_back(sendNode);
-     	   CUDA_CHECK(cudaGraphAddKernelNode(&waitNode, curr_stream->subgraph_comms, nodeDependencies.data(), 
-	     		   nodeDependencies.size(), &waitParams));
-           
-    	}
-    }
-
-    //graph with compute and comms 
-    CUDA_CHECK(cudaGraphAddEmptyNode(&emptyNode, subgraph, NULL, 0));
-    nodeDependencies.clear();
     nodeDependencies2.clear();
-    nodeDependencies.push_back(emptyNode);
-    for(int k=0; k<num_streams; k++) {
-       CUDA_CHECK(cudaGraphAddChildGraphNode(&subgraphNode, subgraph, nodeDependencies.data(), 
-			       		nodeDependencies.size(), 
-			       		stream_state[k].subgraph));
-       nodeDependencies2.push_back(subgraphNode);
-    }
-    CUDA_CHECK(cudaGraphAddEmptyNode(&emptyNode, subgraph, nodeDependencies2.data(), nodeDependencies2.size()));
+    for (int k = 0; k < num_streams; k++) {
+        stream_state_t *curr_stream = (stream_state + k); 
 
-    //graph with comms
-    CUDA_CHECK(cudaGraphAddEmptyNode(&emptyNode, subgraph_comms, NULL, 0));
-    nodeDependencies.clear();
-    nodeDependencies2.clear();
-    nodeDependencies.push_back(emptyNode);
-    for(int k=0; k<num_streams; k++) {
-       CUDA_CHECK(cudaGraphAddChildGraphNode(&subgraphNode, subgraph_comms, nodeDependencies.data(), nodeDependencies.size(), 
-			       		stream_state[k].subgraph_comms));
-       nodeDependencies2.push_back(subgraphNode);
-    }
-    CUDA_CHECK(cudaGraphAddEmptyNode(&emptyNode, subgraph_comms, nodeDependencies2.data(), nodeDependencies2.size()));
+        MP_CHECK(mp_gs_add_start_node(
+            curr_stream->graph_comms_gs,
+            graph_comms,
+            NULL,
+            0,
+            &startNode
+        ));
 
-    //create a graph for a batch of iterations
-    //graph with compute and comms 
-    CUDA_CHECK(cudaGraphAddHostNode(&preNode, graph, NULL, 0, &preParams));
-    nodeDependencies.clear();
-    nodeDependencies.push_back(preNode);
-    CUDA_CHECK(cudaGraphAddChildGraphNode(&subgraphNode_prev, graph, nodeDependencies.data(), nodeDependencies.size(), subgraph_comms)); 
-    for (int k=1; k<steps_per_batch; k++) {
         nodeDependencies.clear();
-        nodeDependencies.push_back(subgraphNode_prev);
-        CUDA_CHECK(cudaGraphAddChildGraphNode (&subgraphNode, graph, nodeDependencies.data(), 
-                    nodeDependencies.size(), subgraph));
-        subgraphNode_prev = subgraphNode;
+        nodeDependencies.push_back(startNode);
+        for (j = 0; j < steps_per_batch; j++) {
+            MP_CHECK(mp_gs_add_irecv_node(
+                curr_stream->graph_comms_gs, 
+                &curr_stream->buf_d,
+                &curr_stream->comm_size,
+                &curr_stream->reg,
+                graph,
+                nodeDependencies.data(),
+                nodeDependencies.size(),
+                &recvNode,
+                &curr_stream->gs_rreq[j]
+            ));
+            nodeDependencies.clear();
+            nodeDependencies.push_back(recvNode);
+        }
+        nodeDependencies2.push_back(nodeDependencies.back());
     }
-    nodeDependencies.clear();
-    nodeDependencies.push_back(subgraphNode_prev);
-    CUDA_CHECK(cudaGraphAddHostNode(&postNode, graph, nodeDependencies.data(), nodeDependencies.size(), &postParams));
-    CUDA_CHECK(cudaGraphInstantiate(&graphexec, graph, NULL, NULL, 0));
 
-    //graph with comms 
-    CUDA_CHECK(cudaGraphAddHostNode(&preNode, graph_comms, NULL, 0, &preParams));
-    nodeDependencies.clear();
-    nodeDependencies.push_back(preNode);
-    CUDA_CHECK(cudaGraphAddChildGraphNode(&subgraphNode_prev, graph_comms, nodeDependencies.data(), nodeDependencies.size(), subgraph_comms)); 
-    for (int k=1; k<steps_per_batch; k++) {
-        nodeDependencies.clear();
-        nodeDependencies.push_back(subgraphNode_prev);
-        CUDA_CHECK(cudaGraphAddChildGraphNode (&subgraphNode, graph_comms, nodeDependencies.data(), 
-                    nodeDependencies.size(), subgraph_comms));
-        subgraphNode_prev = subgraphNode;
+    CUDA_CHECK(cudaGraphAddEmptyNode(&emptyNode, graph, nodeDependencies2.data(), nodeDependencies2.size()));
+
+    for (j = 0; j < steps_per_batch; j++) {
+        nodeDependencies2.clear()
+        for (int k = 0; k < num_streams; k++) {
+            stream_state_t *curr_stream = (stream_state + k); 
+
+            //subgraph with comms
+            if (!my_rank) {
+                MP_CHECK(mp_gs_add_wait_node(
+                    curr_stream->graph_comms_gs,
+                    curr_stream->gs_rreq[j],
+                    graph,
+                    &emptyNode,
+                    1
+                    &waitNode
+                ));
+                
+                nodeDependencies.clear();
+                nodeDependencies.push_back(waitNode);
+
+                MP_CHECK(mp_gs_add_isend_node(
+                    curr_stream->graph_gs,
+                    &curr_stream->buf_d,
+                    &curr_stream->comm_size,
+                    &curr_stream->reg,
+                    graph,
+                    nodeDependencies.data(),
+                    nodeDependencies.size()
+                    &sendNode,
+                    &curr_stream->gs_sreq[j]
+                ));
+
+                nodeDependencies2.push_back(sendNode);
+            } else {
+                MP_CHECK(mp_gs_add_isend_node(
+                    curr_stream->graph_gs,
+                    &curr_stream->buf_d,
+                    &curr_stream->comm_size,
+                    &curr_stream->reg,
+                    graph,
+                    &emptyNode,
+                    1,
+                    &sendNode,
+                    &curr_stream->gs_sreq[j]
+                ));
+
+                nodeDependencies.clear();
+                nodeDependencies.push_back(sendNode);
+
+                MP_CHECK(mp_gs_add_wait_node(
+                    curr_stream->graph_gs,
+                    curr_stream->gs_rreq[j],
+                    graph,
+                    nodeDependencies.data(),
+                    nodeDependencies.size(),
+                    &waitNode
+                ));
+
+                nodeDependencies.clear();
+                nodeDependencies.push_back(waitNode);
+
+                nodeDependencies2.push_back(kernelNode);
+            }
+
+            CUDA_CHECK(cudaGraphAddEmptyNode(&emptyNode, graph, nodeDependencies2.data(), nodeDependencies2.size()));
+        }
     }
-    nodeDependencies.clear();
-    nodeDependencies.push_back(subgraphNode_prev);
-    CUDA_CHECK(cudaGraphAddHostNode(&postNode, graph_comms, nodeDependencies.data(), nodeDependencies.size(), &postParams));
-    CUDA_CHECK(cudaGraphInstantiate(&graphexec_comms, graph_comms, NULL, NULL, 0));
 }
 
 void destroy_async_graph () 
