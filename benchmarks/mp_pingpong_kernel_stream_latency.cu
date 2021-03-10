@@ -409,7 +409,7 @@ void create_async_graph (size_t size, long long int kernel_size)
     for (int k = 0; k < num_streams; k++) {
         stream_state_t *curr_stream = (stream_state + k); 
 
-        MP_CHECK(mp_graph_alloc(
+        MP_CHECK(mp_gs_alloc(
             peer * num_streams + k,
             steps_per_batch,
             steps_per_batch,
@@ -567,7 +567,7 @@ void create_async_graph (size_t size, long long int kernel_size)
     for (int k = 0; k < num_streams; k++) {
         stream_state_t *curr_stream = (stream_state + k); 
 
-        MP_CHECK(mp_graph_alloc(
+        MP_CHECK(mp_gs_alloc(
             peer * num_streams + k,
             steps_per_batch,
             steps_per_batch,

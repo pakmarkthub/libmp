@@ -2517,7 +2517,7 @@ int mp_query_param(mp_param_t param, int *value)
 }
 
 
-int mp_graph_alloc(int peer, uint32_t max_num_send, uint32_t max_num_recv, mp_gs_t *gs)
+int mp_gs_alloc(int peer, uint32_t max_num_send, uint32_t max_num_recv, mp_gs_t *gs)
 {
     int ret = 0;
 
