@@ -3021,3 +3021,50 @@ out:
     return ret;
 }
 
+void mp_gs_free(mp_gs_t gs)
+{
+    if (!gs)
+        return;
+
+    if (gs->max_num_send_d)
+        cudaFree(gs->max_num_send_d);
+
+    if (gs->windex_d)
+        cudaFree(gs->windex_d);
+
+    if (gs->sindex_d)
+        cudaFree(gs->sindex_d);
+
+    if (gs->rindex_d)
+        cudaFree(gs->rindex_d);
+
+    if (gs->wdesc)
+        cudaFreeHost(gs->wdesc);
+
+    if (gs->sdesc)
+        cudaFreeHost(gs->sdesc);
+
+    if (gs->wait_params)
+        free(gs->wait_params);
+
+    if (gs->send_params)
+        free(gs->send_params);
+
+    if (gs->wait_nodes)
+        free(gs->wait_nodes);
+
+    if (gs->recv_nodes)
+        free(gs->recv_nodes);
+
+    if (gs->send_nodes)
+        free(gs->send_nodes);
+
+    if (gs->rreq)
+        free(gs->rreq);
+    
+    if (gs->sreq)
+        free(gs->sreq);
+    
+    free(gs);
+}
+

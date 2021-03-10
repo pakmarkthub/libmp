@@ -206,7 +206,7 @@ typedef struct mp_gs_wait_param {
     struct mp_gs_req req;
 } mp_gs_wait_param_t;
 
-struct mp_kernel_gs {
+struct mp_gs {
     int peer;
 
     uint32_t  max_num_send;
