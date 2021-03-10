@@ -2853,12 +2853,6 @@ int mp_gs_add_end_node(mp_gs_t gs, cudaGraph_t graph, cudaGraphNode_t *dependenc
         goto out;
     }
 
-    if (!gs->start_node) {
-        mp_dbg_msg("mp_gs_add_start_node must be called first.\n");
-        ret = EINVAL;
-        goto out;
-    }
-
     params.fn = gs_graph_end;
     params.userData = gs;
 
@@ -2889,18 +2883,6 @@ int mp_gs_add_isend_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGra
     struct mp_gs_req _sreq;
 
     void *args[3];
-
-    if (!gs->start_node) {
-        mp_dbg_msg("mp_gs_add_start_node must be called first.\n");
-        ret = EINVAL;
-        goto out;
-    }
-
-    if (gs->end_node) {
-        mp_dbg_msg("mp_gs_add_end_node must be called later.\n");
-        ret = EINVAL;
-        goto out;
-    }
 
     if (gs->sindex >= gs->max_num_send) {
         mp_dbg_msg("No more slot to hold this in-flight send.\n");
@@ -2954,18 +2936,6 @@ int mp_gs_add_irecv_node(mp_gs_t gs, void *buf, int size, mp_reg_t *reg, cudaGra
 
     struct mp_gs_req _rreq;
 
-    if (!gs->start_node) {
-        mp_dbg_msg("mp_gs_add_start_node must be called first.\n");
-        ret = EINVAL;
-        goto out;
-    }
-
-    if (gs->end_node) {
-        mp_dbg_msg("mp_gs_add_end_node must be called later.\n");
-        ret = EINVAL;
-        goto out;
-    }
-
     if (gs->rindex >= gs->max_num_recv) {
         mp_dbg_msg("No more slot to hold this in-flight recv.\n");
         ret = ENOMEM;
@@ -3008,18 +2978,6 @@ int mp_gs_add_wait_node(mp_gs_t gs, mp_gs_req_t req, cudaGraph_t graph, cudaGrap
     struct mp_gs_req _req = (struct mp_gs_req)req;
 
     void *args[3];
-
-    if (!gs->start_node) {
-        mp_dbg_msg("mp_gs_add_start_node must be called first.\n");
-        ret = EINVAL;
-        goto out;
-    }
-
-    if (gs->end_node) {
-        mp_dbg_msg("mp_gs_add_end_node must be called later.\n");
-        ret = EINVAL;
-        goto out;
-    }
 
     if (gs->windex >= gs->max_num_wait) {
         mp_dbg_msg("No more slot to hold this in-flight wait.\n");
